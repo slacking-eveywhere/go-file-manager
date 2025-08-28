@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📁 File Manager</h1>
+            <div class="current-path">
+                <span id="current-path-text">/</span>
+                <button id="go-up-btn" class="btn btn-secondary" disabled>⬆️ Up</button>
+                <button id="new-folder-btn" class="btn btn-primary">📁 New Folder</button>
+                <button id="upload-files-btn" class="btn btn-success">📤 Upload Files</button>
+                <button id="upload-folder-btn" class="btn btn-success">📂 Upload Folder</button>
+            </div>
+        </header>
+
+        <div class="file-list-container">
+            <div id="drop-zone" class="drop-zone">
+                <div class="drop-zone-content">
+                    <p>📎 Drop files here to upload</p>
+                </div>
+            </div>
+
+            <div class="file-list-header">
+                <div class="file-name">Name</div>
+                <div class="file-size">Size</div>
+                <div class="file-date">Modified</div>
+                <div class="file-actions">Actions</div>
+            </div>
+
+            <div id="file-list" class="file-list">
+                <!-- Files will be loaded here -->
+            </div>
+        </div>
+
+        <div id="loading" class="loading">
+            Loading...
+        </div>
+    </div>
+
+    <!-- Modal for rename -->
+    <div id="rename-modal" class="modal">
+        <div class="modal-content">
+            <h3>Rename Item</h3>
+            <input type="text" id="rename-input" placeholder="Enter new name">
+            <div class="modal-actions">
+                <button id="rename-confirm" class="btn btn-primary">Rename</button>
+                <button id="rename-cancel" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for new folder -->
+    <div id="new-folder-modal" class="modal">
+        <div class="modal-content">
+            <h3>Create New Folder</h3>
+            <input type="text" id="new-folder-input" placeholder="Enter folder name">
+            <div class="modal-actions">
+                <button id="new-folder-confirm" class="btn btn-primary">Create</button>
+                <button id="new-folder-cancel" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for conflict resolution -->
+    <div id="conflict-modal" class="modal">
+        <div class="modal-content">
+            <h3>File Conflict</h3>
+            <p id="conflict-message">File already exists. What would you like to do?</p>
+            <div class="modal-actions">
+                <button id="conflict-overwrite" class="btn btn-warning">Overwrite</button>
+                <button id="conflict-skip" class="btn btn-secondary">Skip</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for delete confirmation -->
+    <div id="delete-modal" class="modal">
+        <div class="modal-content">
+            <h3>Confirm Delete</h3>
+            <p id="delete-message">Are you sure you want to delete this item?</p>
+            <div class="modal-actions">
+                <button id="delete-confirm" class="btn btn-danger">Delete</button>
+                <button id="delete-cancel" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress bar for uploads -->
+    <div id="upload-progress" class="upload-progress" style="display: none;">
+        <div class="progress-bar">
+            <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <span id="progress-text">Uploading...</span>
+    </div>
+
+    <!-- Hidden file inputs for browser compatibility -->
+    <input type="file" id="file-input" multiple style="display: none;">
+    <input type="file" id="folder-input" webkitdirectory multiple style="display: none;">
+
+    <!-- Notification Container -->
+    <div id="notification-container" class="notification-container"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <div>Processing...</div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
