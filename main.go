@@ -7,19 +7,22 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
 type FileInfo struct {
-	Name         string    `json:"name"`
-	Path         string    `json:"path"`
-	IsDir        bool      `json:"isDir"`
-	Size         int64     `json:"size"`
-	ModTime      time.Time `json:"modTime"`
-	CreateTime   time.Time `json:"createTime"`
-	SizeFormatted string   `json:"sizeFormatted"`
+	Name          string    `json:"name"`
+	Path          string    `json:"path"`
+	IsDir         bool      `json:"isDir"`
+	Size          int64     `json:"size"`
+	ModTime       time.Time `json:"modTime"`
+	CreateTime    time.Time `json:"createTime"`
+	SizeFormatted string    `json:"sizeFormatted"`
 }
 
 type DirectoryContent struct {
@@ -45,18 +48,41 @@ func main() {
 		log.Fatal("Error getting absolute path:", err)
 	}
 
+	// Ensure rootDir exists and is writable
+	rootDirStat, err := os.Stat(rootDir)
+	if err != nil {
+		log.Fatal("Error getting directory stats:", err)
+	}
+
+	if !rootDirStat.IsDir() {
+		log.Fatal("Root dir path must be a folder.")
+	}
+
+	stat := rootDirStat.Sys().(*syscall.Stat_t)
+	fmt.Printf("UID: %d, GID: %d\n", stat.Uid, stat.Gid)
+
+	// Get the user's UID launching this program
+	currentUser, err := user.Current()
+	if err != nil {
+		log.Fatal("Error retrieving current user, aborting :", err)
+	}
+
+	if fmt.Sprint(stat.Uid) != currentUser.Uid || fmt.Sprint(stat.Gid) != currentUser.Gid {
+		log.Fatal("UID/GID is not the same as the owner of the root dir path %s", rootDir)
+	}
+
 	log.Printf("Starting file manager server with root directory: %s", rootDir)
 
 	// Static files
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static/"))))
-	
+
 	// API endpoints
 	http.HandleFunc("/api/list", handleListDirectory)
 	http.HandleFunc("/api/upload", handleUpload)
 	http.HandleFunc("/api/delete", handleDelete)
 	http.HandleFunc("/api/rename", handleRename)
 	http.HandleFunc("/api/mkdir", handleMkdir)
-	
+
 	// Main page
 	http.HandleFunc("/", handleIndex)
 
@@ -132,16 +158,26 @@ func handleListDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fileInfo := FileInfo{
-			Name:         entry.Name(),
-			Path:         filepath.Join(requestedPath, entry.Name()),
-			IsDir:        entry.IsDir(),
-			Size:         entryInfo.Size(),
-			ModTime:      entryInfo.ModTime(),
-			CreateTime:   entryInfo.ModTime(), // Go doesn't provide creation time easily
+			Name:          entry.Name(),
+			Path:          filepath.Join(requestedPath, entry.Name()),
+			IsDir:         entry.IsDir(),
+			Size:          entryInfo.Size(),
+			ModTime:       entryInfo.ModTime(),
+			CreateTime:    entryInfo.ModTime(), // Shit !! Go doesn't provide creation time easily
 			SizeFormatted: formatSize(entryInfo.Size()),
 		}
 		files = append(files, fileInfo)
 	}
+
+	sort.Slice(files, func(i int, j int) bool {
+		if files[i].IsDir && !files[j].IsDir {
+			return true
+		}
+		if !files[i].IsDir && files[j].IsDir {
+			return false
+		}
+		return files[i].Name < files[j].Name
+	})
 
 	// Calculate parent path
 	parentPath := ""
@@ -195,7 +231,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	// Construct target file path
 	targetDir := filepath.Join(rootDir, targetPath)
-	
+
 	// If createPath is true, ensure the directory structure exists
 	if createPath {
 		// Security check for targetDir
@@ -204,7 +240,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid target path", http.StatusBadRequest)
 			return
 		}
-		
+
 		// Create directory structure if it doesn't exist
 		err = os.MkdirAll(targetDir, 0755)
 		if err != nil {
@@ -212,7 +248,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	
+
 	targetFile := filepath.Join(targetDir, header.Filename)
 
 	// Security check
@@ -226,8 +262,8 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	if _, err := os.Stat(targetFile); err == nil && !overwrite {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"success": false,
-			"error":   "File already exists",
+			"success":  false,
+			"error":    "File already exists",
 			"conflict": true,
 			"filename": header.Filename,
 		})
