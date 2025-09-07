@@ -3,6 +3,17 @@ class FileManager {
         this.currentPath = "/";
         this.uploadQueue = [];
         this.isUploading = false;
+        this.conflictedFiles = [];
+        this.fileUploadCounter = {
+            success: 0,
+            error: 0,
+            overwritten: 0,
+            ignored: 0,
+        };
+        this.uploadBehavior = {
+            skipall: false,
+            overwriteall: false,
+        };
         this.init();
     }
 
@@ -163,6 +174,22 @@ class FileManager {
         });
     }
 
+    resetCounter() {
+        this.fileUploadCounter = {
+            success: 0,
+            error: 0,
+            overwritten: 0,
+            ignored: 0,
+        };
+    }
+
+    resetConflictBehavior() {
+        this.uploadBehavior = {
+            skipall: false,
+            overwriteall: false,
+        };
+    }
+
     async loadDirectory(path) {
         this.showLoading(true);
 
@@ -179,7 +206,6 @@ class FileManager {
             }
 
             const data = await response.json();
-            console.log("Directory data:", data);
 
             this.currentPath = data.currentPath;
             this.renderFileList(data);
@@ -274,9 +300,6 @@ class FileManager {
         const goUpBtn = document.getElementById("go-up-btn");
         // Enable up button if we have a parent path and we're not at root
         goUpBtn.disabled = !parentPath || displayPath === "/";
-
-        // Debug logging
-        console.log("Path update:", { currentPath, parentPath, displayPath });
     }
 
     goUp() {
@@ -285,74 +308,6 @@ class FileManager {
                 this.currentPath.split("/").slice(0, -1).join("/") || "/";
             this.loadDirectory(parentPath);
         }
-    }
-
-    async handleFileDrop(e) {
-        const items = Array.from(e.dataTransfer.items);
-        const files = Array.from(e.dataTransfer.files);
-
-        if (items.length === 0 && files.length === 0) return;
-
-        this.showInfo("Processing dropped items...");
-
-        const uploadFiles = [];
-
-        // Try to use webkitGetAsEntry for Chromium browsers (Chrome, Edge, etc.)
-        if (items.length > 0 && items[0].webkitGetAsEntry) {
-            for (const item of items) {
-                if (item.kind === "file") {
-                    const entry = item.webkitGetAsEntry();
-                    if (entry) {
-                        if (entry.isFile) {
-                            const file = item.getAsFile();
-                            uploadFiles.push({ file, path: this.currentPath });
-                        } else if (entry.isDirectory) {
-                            await this.processFolderEntry(
-                                entry,
-                                this.currentPath,
-                                uploadFiles,
-                            );
-                        }
-                    }
-                }
-            }
-        } else {
-            // Fallback for Firefox and other browsers
-            // Check if any files have folder-like paths (contain '/')
-            for (const file of files) {
-                if (file.webkitRelativePath) {
-                    // File is from a folder selection (input with webkitdirectory)
-                    const pathParts = file.webkitRelativePath.split("/");
-                    if (pathParts.length > 1) {
-                        // Remove filename from path to get folder structure
-                        pathParts.pop();
-                        const folderPath =
-                            this.currentPath + "/" + pathParts.join("/");
-                        uploadFiles.push({
-                            file,
-                            path: folderPath,
-                            createPath: true,
-                        });
-                    } else {
-                        uploadFiles.push({ file, path: this.currentPath });
-                    }
-                } else {
-                    // Regular file upload
-                    uploadFiles.push({ file, path: this.currentPath });
-                }
-            }
-        }
-
-        if (uploadFiles.length === 0) {
-            this.showWarning(
-                "No files found to upload. Note: Folder upload may not be fully supported in Firefox. Try uploading individual files or use Chrome/Edge for full folder support.",
-            );
-            return;
-        }
-
-        this.showInfo(`Found ${uploadFiles.length} files to upload`);
-        this.uploadQueue = uploadFiles;
-        this.processUploadQueue();
     }
 
     async processFolderEntry(dirEntry, basePath, files) {
@@ -456,31 +411,57 @@ class FileManager {
         this.isUploading = true;
         this.showUploadProgress(true);
 
-        let successful = 0;
-        let failed = 0;
-
         while (this.uploadQueue.length > 0) {
             const { file, path, createPath } = this.uploadQueue.shift();
             try {
                 await this.uploadFile(file, path, false, createPath);
-                successful++;
+                this.fileUploadCounter.success++;
             } catch (error) {
-                failed++;
+                this.fileUploadCounter.error++;
                 console.error("Upload failed:", error);
             }
+        }
+
+        while (this.conflictedFiles.length > 0) {
+            const { file, path, createPath, filename } =
+                this.conflictedFiles.shift();
+
+            const resolver = new Promise((resolve) => {
+                this.currentConflictResolve = resolve;
+                this.currentConflictFile = file;
+                this.currentConflictPath = path;
+                this.currentConflictCreatePath = createPath;
+
+                if (this.uploadBehavior.overwriteall) {
+                    this.resolveConflict(true);
+                } else if (this.uploadBehavior.skipall) {
+                    this.resolveConflict(false);
+                } else {
+                    // Show conflict modal and wait for resolution
+                    this.showConflictModal(filename);
+                }
+            });
+
+            await resolver;
         }
 
         this.isUploading = false;
         this.showUploadProgress(false);
 
-        if (successful > 0) {
+        if (this.fileUploadCounter.success > 0) {
             this.showSuccess(
-                `Successfully uploaded ${successful} file(s)${failed > 0 ? `, ${failed} failed` : ""}`,
+                `Successfully uploaded ${this.fileUploadCounter.success} file(s)${this.fileUploadCounter.ignored > 0 ? `, ${this.fileUploadCounter.ignored} ignored` : ""}`,
             );
         }
-        if (failed > 0 && successful === 0) {
+        if (
+            this.fileUploadCounter.error > 0 &&
+            this.fileUploadCounter.success === 0
+        ) {
             this.showError(`Failed to upload ${failed} file(s)`);
         }
+
+        this.resetCounter();
+        this.resetConflictBehavior();
 
         this.loadDirectory(this.currentPath); // Refresh the file list
     }
@@ -505,13 +486,11 @@ class FileManager {
             const result = await response.json();
 
             if (result.conflict) {
-                // Show conflict modal and wait for resolution
-                return new Promise((resolve) => {
-                    this.currentConflictResolve = resolve;
-                    this.currentConflictFile = file;
-                    this.currentConflictPath = path;
-                    this.currentConflictCreatePath = createPath;
-                    this.showConflictModal(result.filename);
+                this.conflictedFiles.push({
+                    file: file,
+                    path: path,
+                    createPath: createPath,
+                    filename: result.filename,
                 });
             } else if (!result.success) {
                 throw new Error(result.error || "Upload failed");
@@ -529,6 +508,16 @@ class FileManager {
     }
 
     async resolveConflict(overwrite) {
+        const repeatAction = document.getElementById(
+            "repeat-conflict-action",
+        ).checked;
+
+        if (overwrite) {
+            this.uploadBehavior.overwriteall = repeatAction;
+        } else {
+            this.uploadBehavior.skipall = repeatAction;
+        }
+
         this.hideModal("conflict-modal");
 
         if (overwrite) {
@@ -538,6 +527,10 @@ class FileManager {
                 true,
                 this.currentConflictCreatePath,
             );
+
+            this.fileUploadCounter.overwritten++;
+        } else {
+            this.fileUploadCounter.ignored++;
         }
 
         if (this.currentConflictResolve) {
@@ -566,8 +559,6 @@ class FileManager {
         this.showInfo(`Starting deletion of "${name}"`);
 
         try {
-            console.log("Deleting item:", { path, name });
-
             const response = await fetch("/api/delete", {
                 method: "DELETE",
                 headers: {
@@ -575,8 +566,6 @@ class FileManager {
                 },
                 body: JSON.stringify({ path }),
             });
-
-            console.log("Delete response status:", response.status);
 
             if (!response.ok) {
                 const errorText = await response.text();
@@ -587,7 +576,6 @@ class FileManager {
             }
 
             const result = await response.json();
-            console.log("Delete result:", result);
 
             if (result.success) {
                 this.showSuccess(`"${name}" deleted successfully`);

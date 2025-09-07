@@ -277,6 +277,10 @@ header h1 {
     justify-content: flex-end;
 }
 
+#repeat-conflict-action {
+    width: auto;
+}
+
 .upload-progress {
     position: fixed;
     bottom: 20px;
