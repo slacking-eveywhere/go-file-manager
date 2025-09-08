@@ -1,21 +1,17 @@
-# Étape de build
 FROM golang:1.23 AS builder
 
-# Variables de build
 ARG GO_VERSION=1.23.4
 WORKDIR /src
 
-# Copier le code source
-COPY . .
+COPY main.go main.go
+COPY static/ static/
 
-# Compiler en binaire statique
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/app ./...
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/go-file-manager ./...
 
-# Étape finale minimale (distroless)
 FROM gcr.io/distroless/base-debian12
 
 WORKDIR /
-COPY --from=builder /out/app /app
+COPY --from=builder /out/go-file-manager /go-file-manager
 
 USER nonroot:nonroot
-ENTRYPOINT ["/app"]
+ENTRYPOINT ["/go-file-manager"]
