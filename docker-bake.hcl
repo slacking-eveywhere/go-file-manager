@@ -7,14 +7,14 @@ variable "REGISTRY" {
 }
 
 group "default" {
-  targets = ["app"]
+  targets = ["go-file-manager"]
 }
 
-target "app" {
+target "go-file-manager" {
   context    = "."
   dockerfile = "Dockerfile"
   args = {
     GO_VERSION = "${GO_VERSION}"
   }
-  tags = ["${REGISTRY}myapp:${GO_VERSION}", "${REGISTRY}myapp:latest"]
+  tags = ["${REGISTRY}go-file-manager:${GO_VERSION}", "${REGISTRY}go-file-manager:latest"]
 }
