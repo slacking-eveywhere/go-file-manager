@@ -3,7 +3,7 @@ variable "GO_VERSION" {
 }
 
 variable "REGISTRY" {
-  default = "registry.site-lambda.fr/"
+  default = ""
 }
 
 group "default" {
