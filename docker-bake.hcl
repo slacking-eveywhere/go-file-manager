@@ -16,5 +16,5 @@ target "go-file-manager" {
   args = {
     GO_VERSION = "${GO_VERSION}"
   }
-  tags = ["${REGISTRY}go-file-manager:${GO_VERSION}", "${REGISTRY}go-file-manager:latest"]
+  tags = ["${REGISTRY}/go-file-manager:${GO_VERSION}", "${REGISTRY}/go-file-manager:latest"]
 }

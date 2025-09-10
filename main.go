@@ -59,7 +59,7 @@ func main() {
 	}
 
 	stat := rootDirStat.Sys().(*syscall.Stat_t)
-	fmt.Printf("UID: %d, GID: %d\n", stat.Uid, stat.Gid)
+	fmt.Printf("Root dir stats UID: %d, GID: %d\n", stat.Uid, stat.Gid)
 
 	// Get the user's UID launching this program
 	currentUser, err := user.Current()
@@ -68,7 +68,8 @@ func main() {
 	}
 
 	if fmt.Sprint(stat.Uid) != currentUser.Uid || fmt.Sprint(stat.Gid) != currentUser.Gid {
-		log.Fatal("UID/GID is not the same as the owner of the root dir path %s", rootDir)
+		fmt.Printf("Current user UID: %s, GID: %s\n", currentUser.Uid, currentUser.Gid)
+		log.Fatal("UID/GID is not the same as the owner of the root dir path")
 	}
 
 	log.Printf("Starting file manager server with root directory: %s", rootDir)

@@ -1,6 +1,6 @@
 # Go File Manager
 
-A web-based hierarchical file manager built with Go and vanilla JavaScript. This application provides a clean interface to browse, manage, and upload files through a web browser. One go file and one html file. No bloatsm and shits.
+A web-based hierarchical file manager built with Go and vanilla JavaScript. This application provides a clean interface to browse, manage, and upload files through a web browser. One go file and one html file. No bloats and shits.
 
 ## Features
 
@@ -15,7 +15,7 @@ A web-based hierarchical file manager built with Go and vanilla JavaScript. This
 1. Clone or download this repository
 2. Make sure you have Go installed (version 1.21 or later)
 3. Navigate to the project directory
-4. Next time, docker image
+4. Docker image and bake recipe provided.
 
 ## Configuration
 
@@ -40,6 +40,22 @@ PORT=3000 go run main.go
 
 # Or both
 FILES_ROOT_DIR=/path/to/your/files PORT=3000 go run main.go
+```
+
+### Starting as docker image
+
+Starting the docker image is pretty straightforward.
+Only env var `FILES_ROOT_DIR` is mandatory.
+
+You have to adjust user and volume rights.
+In the exemple below, the volume `data_test` belong to a user with UID:GID=1000:1000.
+```bash
+docker run -it --rm \
+	-e FILES_ROOT_DIR=/data \
+	--user 1000:1000 \
+	-v data_test:/data \
+	-p 8080:8080  \
+	go-file-manager
 ```
 
 ### Accessing the Application
