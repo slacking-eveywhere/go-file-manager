@@ -158,6 +158,29 @@ class FileManager {
                 this.hideModal("delete-modal");
             });
 
+		// Move modal
+		document
+			.getElementById("move-cancel")
+			.addEventListener("click", () => {
+				this.hideModal("move-modal");
+			});
+
+		document
+			.getElementById("move-confirm")
+			.addEventListener("click", () => {
+				this.confirmMove();
+			});
+
+		document
+			.getElementById("move-go-up-btn")
+			.addEventListener("click", () => {
+				const currentMovePath = document.getElementById("move-current-path").textContent;
+				if (currentMovePath && currentMovePath !== "/") {
+					const parentPath = currentMovePath.split("/").slice(0, -1).join("/") || "/";
+					this.loadMoveDirectory(parentPath);
+				}
+			});
+
         // Close modals when clicking outside
         document.querySelectorAll(".modal").forEach((modal) => {
             modal.addEventListener("click", (e) => {
@@ -166,13 +189,85 @@ class FileManager {
                 }
             });
         });
-
+		
         // Handle browser back/forward buttons
         window.addEventListener("popstate", (e) => {
             const path = e.state?.path || this.getPathFromURL();
             this.loadDirectory(path);
         });
     }
+
+	moveItem(path, name) {
+		this.currentMovePath = path;
+		this.currentMoveName = name;
+		this.showModal("move-modal");
+		this.loadMoveDirectory("/");
+	}
+
+	async loadMoveDirectory(path) {
+		try {
+			const response = await fetch(`/api/ls?path=${encodeURIComponent(path)}`);
+			if (!response.ok) {
+				throw new Error("Failed to load directory");
+			}
+			const data = await response.json();
+			const fileList = document.getElementById("move-file-list");
+			fileList.innerHTML = "";
+			data.files.forEach(file => {
+				if (file.isDir) {
+					const item = document.createElement("div");
+					item.className = "file-item folder";
+					item.innerHTML = `<span class="file-icon">📁</span> <span>${this.escapeHtml(file.name)}</span>`;
+					item.addEventListener("click", () => {
+						this.loadMoveDirectory(file.path);
+					});
+					fileList.appendChild(item);
+				}
+			});
+			document.getElementById("move-current-path").textContent = data.currentPath;
+			document.getElementById("move-go-up-btn").disabled = data.currentPath === "/";
+		} catch (error) {
+			console.error("Error loading move directory:", error);
+			this.showError("Failed to load directory for move");
+		}
+	}
+
+	async confirmMove() {
+		const to = document.getElementById("move-current-path").textContent;
+		this.hideModal("move-modal");
+		this.showLoadingOverlay(true, `Moving "${this.currentMoveName}"...`);
+
+		try {
+			const response = await fetch("/api/move", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					from: this.currentMovePath,
+					to: to,
+				}),
+			});
+
+			if (!response.ok) {
+				const errorText = await response.text();
+				throw new Error(`Server error (${response.status}): ${errorText}`);
+			}
+
+			const result = await response.json();
+			if (result.success) {
+				this.showSuccess("Item moved successfully");
+				this.loadDirectory(this.currentPath);
+			} else {
+				throw new Error(result.error || "Move failed");
+			}
+		} catch (error) {
+			console.error("Move error:", error);
+			this.showError(`Failed to move: ${error.message}`);
+		} finally {
+			this.showLoadingOverlay(false);
+		}
+	}
 
     resetCounter() {
         this.fileUploadCounter = {
@@ -263,6 +358,7 @@ class FileManager {
             <div class="file-date">${this.formatDate(file.modTime)}</div>
             <div class="file-actions">
                 <button class="btn btn-secondary btn-small rename-btn" data-path="${this.escapeHtml(file.path)}" data-name="${this.escapeHtml(file.name)}">✏️</button>
+                <button class="btn btn-primary btn-small move-btn" data-path="${this.escapeHtml(file.path)}" data-name="${this.escapeHtml(file.name)}">➡️</button>
                 <button class="btn btn-danger btn-small delete-btn" data-path="${this.escapeHtml(file.path)}" data-name="${this.escapeHtml(file.name)}">🗑️</button>
             </div>
         `;
@@ -270,6 +366,7 @@ class FileManager {
         // Add event listeners for buttons
         const renameBtn = item.querySelector(".rename-btn");
         const deleteBtn = item.querySelector(".delete-btn");
+		const moveBtn = item.querySelector(".move-btn");
 
         renameBtn.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -280,6 +377,11 @@ class FileManager {
             e.stopPropagation();
             this.deleteItem(file.path, file.name);
         });
+
+		moveBtn.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.moveItem(file.path, file.name);
+		});
 
         if (file.isDir) {
             item.addEventListener("click", (e) => {

@@ -83,6 +83,8 @@ func main() {
 	http.HandleFunc("/api/delete", handleDelete)
 	http.HandleFunc("/api/rename", handleRename)
 	http.HandleFunc("/api/mkdir", handleMkdir)
+	http.HandleFunc("/api/move", handleMove)
+	http.HandleFunc("/api/ls", handleLs)
 
 	// Main page
 	http.HandleFunc("/", handleIndex)
@@ -425,6 +427,122 @@ func handleMkdir(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": "Directory created successfully",
 	})
+}
+
+func handleMove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var requestData struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&requestData)
+	if err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Construct paths
+	fromFullPath := filepath.Join(rootDir, requestData.From)
+	toFullPath := filepath.Join(rootDir, requestData.To, filepath.Base(requestData.From))
+
+	// Security checks
+	fromFullPath, err = filepath.Abs(fromFullPath)
+	if err != nil || !strings.HasPrefix(fromFullPath, rootDir) {
+		http.Error(w, "Invalid source path", http.StatusBadRequest)
+		return
+	}
+
+	toFullPath, err = filepath.Abs(toFullPath)
+	if err != nil || !strings.HasPrefix(toFullPath, rootDir) {
+		http.Error(w, "Invalid destination path", http.StatusBadRequest)
+		return
+	}
+
+	// Check if destination exists
+	if _, err := os.Stat(toFullPath); err == nil {
+		http.Error(w, "Destination already exists", http.StatusConflict)
+		return
+	}
+
+	// Move file
+	err = os.Rename(fromFullPath, toFullPath)
+	if err != nil {
+		http.Error(w, "Error moving file", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "File moved successfully",
+	})
+}
+
+func handleLs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	requestedPath := r.URL.Query().Get("path")
+	if requestedPath == "" {
+		requestedPath = "/"
+	}
+
+	fullPath := filepath.Join(rootDir, requestedPath)
+	fullPath, err := filepath.Abs(fullPath)
+	if err != nil || !strings.HasPrefix(fullPath, rootDir) {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+
+	entries, err := os.ReadDir(fullPath)
+	if err != nil {
+		http.Error(w, "Error reading directory", http.StatusInternalServerError)
+		return
+	}
+
+	var dirs []FileInfo
+	for _, entry := range entries {
+		if entry.IsDir() {
+			entryInfo, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			dirs = append(dirs, FileInfo{
+				Name:    entry.Name(),
+				Path:    filepath.Join(requestedPath, entry.Name()),
+				IsDir:   true,
+				ModTime: entryInfo.ModTime(),
+			})
+		}
+	}
+
+	sort.Slice(dirs, func(i, j int) bool {
+		return dirs[i].Name < dirs[j].Name
+	})
+
+	parentPath := ""
+	if requestedPath != "/" && requestedPath != "" {
+		parentPath = filepath.Dir(requestedPath)
+		if parentPath == "." {
+			parentPath = "/"
+		}
+	}
+
+	response := DirectoryContent{
+		CurrentPath: requestedPath,
+		ParentPath:  parentPath,
+		Files:       dirs,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 func formatSize(size int64) string {

@@ -9,7 +9,6 @@
     <body>
         <div class="container">
             <header>
-                <h1>📁 File Manager</h1>
                 <div class="current-path">
                     <span id="current-path-text">/</span>
                     <button id="go-up-btn" class="btn btn-secondary" disabled>
@@ -119,6 +118,31 @@
                         Delete
                     </button>
                     <button id="delete-cancel" class="btn btn-secondary">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal for move -->
+        <div id="move-modal" class="modal">
+            <div class="modal-content">
+                <h3>Move Item</h3>
+                <p>Select destination folder:</p>
+                <div class="file-browser">
+                    <div class="file-browser-header">
+                        <button id="move-go-up-btn" class="btn btn-secondary">
+                            ⬆️ Up
+                        </button>
+                        <span id="move-current-path">/</span>
+                    </div>
+                    <div id="move-file-list" class="file-list"></div>
+                </div>
+                <div class="modal-actions">
+                    <button id="move-confirm" class="btn btn-primary">
+                        Move
+                    </button>
+                    <button id="move-cancel" class="btn btn-secondary">
                         Cancel
                     </button>
                 </div>
