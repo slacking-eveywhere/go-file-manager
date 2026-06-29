@@ -51,6 +51,7 @@ body {
     max-width: 80%;
     margin: 0 auto;
     padding: 20px;
+    display: none; /* replaced by dual-panel layout */
 }
 
 header {
@@ -215,15 +216,27 @@ header h1 {
     padding: 12px 20px;
     border-bottom: 1px solid var(--bg1);
     align-items: center;
-    transition: background-color 0.2s;
+    transition: background-color 0.15s;
+    cursor: default;
+    user-select: none;
 }
 
 .file-item:hover {
     background-color: var(--bg1);
 }
 
+.file-item.selected {
+    background-color: var(--bg2);
+    outline: 2px solid var(--blue-dim);
+    outline-offset: -2px;
+}
+
+.file-item.selected:hover {
+    background-color: var(--bg2);
+}
+
 .file-item.folder {
-    cursor: pointer;
+    cursor: default;
     color: var(--blue);
 }
 
@@ -523,6 +536,186 @@ header h1 {
         width: 100%;
         margin-bottom: 5px;
     }
+}
+
+/* ── Dual-panel layout ─────────────────────────────────────── */
+
+.global-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg1);
+    border-bottom: 2px solid var(--bg3);
+    padding: 8px 16px;
+    gap: 12px;
+}
+
+.global-toolbar-center {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.panel-label {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--purple);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    min-width: 60px;
+}
+
+.panel-label:last-child {
+    text-align: right;
+}
+
+.panels {
+    display: grid;
+    grid-template-columns: 1fr 4px 1fr;
+    height: calc(100vh - 49px);
+    overflow: hidden;
+}
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.panel-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--bg3);
+    padding: 6px 10px;
+}
+
+.path-display {
+    font-family: "Courier New", monospace;
+    background: var(--bg1);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    color: var(--fg1);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.panel .file-list-container {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    border-radius: 0;
+    box-shadow: none;
+    border: none;
+}
+
+.panel .file-list {
+    flex: 1;
+    max-height: none;
+    overflow-y: auto;
+}
+
+.panel-divider {
+    background: var(--bg3);
+    cursor: col-resize;
+    transition: background 0.15s;
+}
+
+.panel-divider:hover {
+    background: var(--grey);
+}
+
+/* ── Compare modal ──────────────────────────────────────────── */
+
+.modal-content--wide {
+    max-width: 700px;
+    width: 95%;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.compare-paths {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.compare-paths .path-display {
+    flex: 1;
+    background: var(--bg1);
+}
+
+.compare-paths-sep {
+    font-size: 18px;
+    color: var(--grey);
+    flex-shrink: 0;
+}
+
+.compare-section {
+    margin-bottom: 16px;
+}
+
+.compare-section h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg2);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--bg2);
+}
+
+.compare-section ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 14px;
+    color: var(--fg);
+}
+
+.compare-section li {
+    padding: 3px 6px;
+    border-radius: 3px;
+}
+
+.compare-section li:nth-child(odd) {
+    background: var(--bg1);
+}
+
+/* ── File browser (move modal) ──────────────────────────────── */
+
+.file-browser {
+    border: 1px solid var(--bg2);
+    border-radius: 6px;
+    overflow: hidden;
+    margin-bottom: 16px;
+}
+
+.file-browser-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg1);
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--bg2);
+    font-family: "Courier New", monospace;
+    font-size: 13px;
+    color: var(--fg1);
+}
+
+.file-browser .file-list {
+    max-height: 220px;
+    overflow-y: auto;
 }
 
 @media (max-width: 480px) {

@@ -7,42 +7,81 @@
         <link rel="stylesheet" href="/static/style.css" />
     </head>
     <body>
-        <div class="container">
-            <header>
-                <div class="current-path">
-                    <span id="current-path-text">/</span>
-                    <button id="go-up-btn" class="btn btn-secondary">
-                        ⬆️ Up
-                    </button>
-                    <button id="new-folder-btn" class="btn btn-primary">
-                        📁 New Folder
-                    </button>
-                    <button id="upload-files-btn" class="btn btn-success">
-                        📤 Upload Files
-                    </button>
-                    <button id="upload-folder-btn" class="btn btn-success">
-                        📂 Upload Folder
-                    </button>
-                </div>
-            </header>
-
-            <div class="file-list-container">
-                <div class="file-list-header">
-                    <div class="file-name">Name</div>
-                    <div class="file-size">Size</div>
-                    <div class="file-date">Modified</div>
-                    <div class="file-actions">Actions</div>
-                </div>
-
-                <div id="file-list" class="file-list">
-                    <!-- Files will be loaded here -->
-                </div>
+        <!-- Global toolbar -->
+        <div class="global-toolbar">
+            <span class="panel-label">Local</span>
+            <div class="global-toolbar-center">
+                <button id="transfer-up-btn" class="btn btn-success">
+                    ⬆ Local → Remote
+                </button>
+                <button id="compare-btn" class="btn btn-secondary">
+                    ⇄ Compare
+                </button>
+                <button id="transfer-down-btn" class="btn btn-primary">
+                    ⬇ Remote → Local
+                </button>
             </div>
-
-            <div id="loading" class="loading">Loading...</div>
+            <span class="panel-label">Remote</span>
         </div>
 
-        <!-- Modal for rename -->
+        <!-- Dual-panel layout -->
+        <div class="panels">
+            <!-- Left panel: Local -->
+            <section class="panel" id="local-panel">
+                <div class="panel-toolbar">
+                    <button id="local-open-btn" class="btn btn-secondary">
+                        📂 Open Folder
+                    </button>
+                    <button id="local-up-btn" class="btn btn-secondary">
+                        ⬆ Up
+                    </button>
+                    <button id="local-refresh-btn" class="btn btn-secondary">
+                        ↺ Refresh
+                    </button>
+                    <span id="local-path" class="path-display"></span>
+                </div>
+                <div class="file-list-container">
+                    <div class="file-list-header">
+                        <div class="file-name">Name</div>
+                        <div class="file-size">Size</div>
+                        <div class="file-date">Modified</div>
+                        <div class="file-actions">Actions</div>
+                    </div>
+                    <div id="local-file-list" class="file-list"></div>
+                </div>
+                <div id="local-loading" class="loading">Loading...</div>
+            </section>
+
+            <div class="panel-divider" role="separator"></div>
+
+            <!-- Right panel: Remote -->
+            <section class="panel" id="remote-panel">
+                <div class="panel-toolbar">
+                    <button id="remote-up-btn" class="btn btn-secondary">
+                        ⬆ Up
+                    </button>
+                    <button id="remote-new-folder-btn" class="btn btn-primary">
+                        📁 New Folder
+                    </button>
+                    <button id="remote-refresh-btn" class="btn btn-secondary">
+                        ↺ Refresh
+                    </button>
+                    <span id="remote-path" class="path-display"></span>
+                </div>
+                <div class="file-list-container">
+                    <div class="file-list-header">
+                        <div class="file-name">Name</div>
+                        <div class="file-size">Size</div>
+                        <div class="file-date">Modified</div>
+                        <div class="file-actions">Actions</div>
+                    </div>
+                    <div id="remote-file-list" class="file-list"></div>
+                </div>
+                <div id="remote-loading" class="loading">Loading...</div>
+            </section>
+        </div>
+
+        <!-- Modal: Rename -->
         <div id="rename-modal" class="modal">
             <div class="modal-content">
                 <h3>Rename Item</h3>
@@ -62,7 +101,7 @@
             </div>
         </div>
 
-        <!-- Modal for new folder -->
+        <!-- Modal: New Folder -->
         <div id="new-folder-modal" class="modal">
             <div class="modal-content">
                 <h3>Create New Folder</h3>
@@ -82,7 +121,7 @@
             </div>
         </div>
 
-        <!-- Modal for conflict resolution -->
+        <!-- Modal: Conflict Resolution -->
         <div id="conflict-modal" class="modal">
             <div class="modal-content">
                 <h3>File Conflict</h3>
@@ -90,10 +129,10 @@
                     File already exists. What would you like to do?
                 </p>
                 <div>
-                    <span>Repeat action for remaining conflict : </span
-                    ><span
-                        ><input id="repeat-conflict-action" type="checkbox" />
-                    </span>
+                    <label>
+                        <input id="repeat-conflict-action" type="checkbox" />
+                        Repeat action for remaining conflicts
+                    </label>
                 </div>
                 <div class="modal-actions">
                     <button id="conflict-overwrite" class="btn btn-warning">
@@ -106,7 +145,7 @@
             </div>
         </div>
 
-        <!-- Modal for delete confirmation -->
+        <!-- Modal: Delete Confirmation -->
         <div id="delete-modal" class="modal">
             <div class="modal-content">
                 <h3>Confirm Delete</h3>
@@ -124,7 +163,7 @@
             </div>
         </div>
 
-        <!-- Modal for move -->
+        <!-- Modal: Move -->
         <div id="move-modal" class="modal">
             <div class="modal-content">
                 <h3>Move Item</h3>
@@ -132,7 +171,7 @@
                 <div class="file-browser">
                     <div class="file-browser-header">
                         <button id="move-go-up-btn" class="btn btn-secondary">
-                            ⬆️ Up
+                            ⬆ Up
                         </button>
                         <span id="move-current-path">/</span>
                     </div>
@@ -149,7 +188,36 @@
             </div>
         </div>
 
-        <!-- Progress bar for uploads -->
+        <!-- Modal: Compare -->
+        <div id="compare-modal" class="modal">
+            <div class="modal-content modal-content--wide">
+                <h3>Compare Folders</h3>
+                <div class="compare-paths">
+                    <span class="path-display" id="compare-local-path"></span>
+                    <span class="compare-paths-sep">⇄</span>
+                    <span class="path-display" id="compare-remote-path"></span>
+                </div>
+                <section class="compare-section">
+                    <h4>Only in Local</h4>
+                    <ul id="compare-only-local"></ul>
+                </section>
+                <section class="compare-section">
+                    <h4>Only in Remote</h4>
+                    <ul id="compare-only-remote"></ul>
+                </section>
+                <section class="compare-section">
+                    <h4>Different (size or date)</h4>
+                    <ul id="compare-different"></ul>
+                </section>
+                <div class="modal-actions">
+                    <button id="compare-close" class="btn btn-secondary">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Upload progress -->
         <div id="upload-progress" class="upload-progress" style="display: none">
             <div class="progress-bar">
                 <div id="progress-fill" class="progress-fill"></div>
@@ -157,20 +225,10 @@
             <span id="progress-text">Uploading...</span>
         </div>
 
-        <!-- Hidden file inputs for browser compatibility -->
-        <input type="file" id="file-input" multiple style="display: none" />
-        <input
-            type="file"
-            id="folder-input"
-            webkitdirectory
-            multiple
-            style="display: none"
-        />
-
-        <!-- Notification Container -->
+        <!-- Notification container -->
         <div id="notification-container" class="notification-container"></div>
 
-        <!-- Loading Overlay -->
+        <!-- Loading overlay -->
         <div id="loading-overlay" class="loading-overlay">
             <div class="loading-spinner">
                 <div class="spinner"></div>

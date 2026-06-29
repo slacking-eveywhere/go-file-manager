@@ -1,6 +1,192 @@
-class FileManager {
-  constructor() {
+// ─────────────────────────────────────────────────────────────
+// LocalPanel — navigates a local directory via File System
+// Access API (Chrome 86+, Firefox 111+).
+// ─────────────────────────────────────────────────────────────
+class LocalPanel {
+  constructor(ui) {
+    this.ui = ui;
+    this.rootHandle = null;
+    this.currentHandle = null;
+    this.breadcrumb = [];
+    this.files = [];
+    this.supported = typeof window.showDirectoryPicker === "function";
+    this.selectedEntry = null;
+    this._selectedEl = null;
+  }
+
+  get currentPath() {
+    if (!this.rootHandle) return "";
+    return "/" + this.breadcrumb.map((e) => e.name).join("/");
+  }
+
+  async open() {
+    if (!this.supported) {
+      this.ui.showError(
+        "File System Access API not supported in this browser.",
+      );
+      return;
+    }
+    try {
+      const handle = await window.showDirectoryPicker({ mode: "read" });
+      this.rootHandle = handle;
+      this.currentHandle = handle;
+      this.breadcrumb = [];
+      await this.refresh();
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        this.ui.showError("Could not open folder: " + err.message);
+      }
+    }
+  }
+
+  async navigate(handle, name) {
+    this.breadcrumb.push({ name, handle: this.currentHandle });
+    this.currentHandle = handle;
+    await this.refresh();
+  }
+
+  async goUp() {
+    if (this.breadcrumb.length === 0) return;
+    this.selectedEntry = null;
+    this._selectedEl = null;
+    const parent = this.breadcrumb.pop();
+    this.currentHandle = parent.handle;
+    await this.refresh();
+  }
+
+  async refresh() {
+    if (!this.currentHandle) return;
+    this.ui.setLoading("local", true);
+    try {
+      const entries = [];
+      for await (const [name, handle] of this.currentHandle.entries()) {
+        let size = 0;
+        let modTime = null;
+        if (handle.kind === "file") {
+          try {
+            const file = await handle.getFile();
+            size = file.size;
+            modTime = new Date(file.lastModified);
+          } catch (_) {}
+        }
+        entries.push({
+          name,
+          isDir: handle.kind === "directory",
+          size,
+          modTime,
+          handle,
+        });
+      }
+      entries.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      this.files = entries;
+      this.render();
+    } catch (err) {
+      this.ui.showError("Error reading local folder: " + err.message);
+    } finally {
+      this.ui.setLoading("local", false);
+    }
+  }
+
+  render() {
+    const el = document.getElementById("local-path");
+    el.textContent = this.currentPath || "(no folder opened)";
+
+    const upBtn = document.getElementById("local-up-btn");
+    upBtn.disabled = this.breadcrumb.length === 0;
+
+    const list = document.getElementById("local-file-list");
+    list.innerHTML = "";
+
+    if (!this.currentHandle) {
+      const msg = document.createElement("div");
+      msg.className = "empty-directory";
+      msg.textContent = "Click 'Open Folder' to browse local files.";
+      list.appendChild(msg);
+      return;
+    }
+
+    if (this.files.length === 0) {
+      const msg = document.createElement("div");
+      msg.className = "empty-directory";
+      msg.textContent = "This directory is empty.";
+      list.appendChild(msg);
+      return;
+    }
+
+    for (const entry of this.files) {
+      list.appendChild(this._createItem(entry));
+    }
+  }
+
+  _select(entry, el) {
+    if (this._selectedEl) this._selectedEl.classList.remove("selected");
+    if (this.selectedEntry === entry) {
+      this.selectedEntry = null;
+      this._selectedEl = null;
+    } else {
+      this.selectedEntry = entry;
+      this._selectedEl = el;
+      el.classList.add("selected");
+    }
+  }
+
+  _createItem(entry) {
+    const item = document.createElement("div");
+    item.className = `file-item ${entry.isDir ? "folder" : "file"}`;
+
+    const nameCol = document.createElement("div");
+    nameCol.className = "file-name";
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.textContent = entry.isDir ? "📁" : "📄";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = entry.name;
+    nameCol.appendChild(icon);
+    nameCol.appendChild(nameSpan);
+
+    const sizeCol = document.createElement("div");
+    sizeCol.className = "file-size";
+    sizeCol.textContent = entry.isDir ? "-" : formatSize(entry.size);
+
+    const dateCol = document.createElement("div");
+    dateCol.className = "file-date";
+    dateCol.textContent = entry.modTime ? formatDate(entry.modTime) : "-";
+
+    const actionsCol = document.createElement("div");
+    actionsCol.className = "file-actions";
+
+    item.appendChild(nameCol);
+    item.appendChild(sizeCol);
+    item.appendChild(dateCol);
+    item.appendChild(actionsCol);
+
+    item.addEventListener("click", () => this._select(entry, item));
+
+    if (entry.isDir) {
+      item.addEventListener("dblclick", () => {
+        this.selectedEntry = null;
+        this._selectedEl = null;
+        this.navigate(entry.handle, entry.name);
+      });
+    }
+
+    return item;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// RemotePanel — navigates the server via /api/* endpoints.
+// All existing upload / rename / delete / move logic lives here.
+// ─────────────────────────────────────────────────────────────
+class RemotePanel {
+  constructor(ui) {
+    this.ui = ui;
     this.currentPath = "/";
+    this.files = []; // [{name, isDir, size, sizeFormatted, modTime, path}]
+
     this.uploadQueue = [];
     this.isUploading = false;
     this.conflictedFiles = [];
@@ -10,771 +196,458 @@ class FileManager {
       overwritten: 0,
       ignored: 0,
     };
-    this.uploadBehavior = {
-      skipall: false,
-      overwriteall: false,
-    };
-    this.init();
-  }
+    this.uploadBehavior = { skipall: false, overwriteall: false };
 
-  init() {
-    this.setupEventListeners();
+    // Pending action state
+    this.pendingDelete = null; // {path, name}
+    this.pendingRename = null; // {path}
+    this.pendingMove = null; // {path, name}
 
-    // Get initial path from URL or default to root
-    const urlPath = this.getPathFromURL();
-    this.loadDirectory(urlPath);
-  }
-
-  getPathFromURL() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const path = urlParams.get("path");
-    return path || "/";
-  }
-
-  updateURL(path) {
-    const url = new URL(window.location);
-    if (path === "/" || path === "") {
-      url.searchParams.delete("path");
-    } else {
-      url.searchParams.set("path", path);
-    }
-
-    // Update URL without triggering page reload
-    window.history.pushState({ path }, "", url);
-
-    // Update page title to show current path
-    document.title = `File Manager - ${path === "/" ? "Root" : path}`;
-  }
-
-  setupEventListeners() {
-    // Navigation
-    document.getElementById("go-up-btn").addEventListener("click", () => {
-      this.goUp();
-    });
-
-    // New folder
-    document.getElementById("new-folder-btn").addEventListener("click", () => {
-      this.showNewFolderModal();
-    });
-
-    // Upload buttons
-    document
-      .getElementById("upload-files-btn")
-      .addEventListener("click", () => {
-        document.getElementById("file-input").click();
-      });
-
-    document
-      .getElementById("upload-folder-btn")
-      .addEventListener("click", () => {
-        document.getElementById("folder-input").click();
-      });
-
-    // File input handlers
-    document.getElementById("file-input").addEventListener("change", (e) => {
-      this.handleFileInput(e.target.files);
-    });
-
-    document.getElementById("folder-input").addEventListener("change", (e) => {
-      this.handleFileInput(e.target.files, true);
-    });
-
-    // Modal event listeners
-    this.setupModalListeners();
-  }
-
-  setupModalListeners() {
-    // Rename modal
-    document.getElementById("rename-cancel").addEventListener("click", () => {
-      this.hideModal("rename-modal");
-    });
-
-    document.getElementById("rename-confirm").addEventListener("click", () => {
-      this.confirmRename();
-    });
-
-    document
-      .getElementById("rename-input")
-      .addEventListener("keypress", (e) => {
-        if (e.key === "Enter") {
-          this.confirmRename();
-        }
-      });
-
-    // New folder modal
-    document
-      .getElementById("new-folder-cancel")
-      .addEventListener("click", () => {
-        this.hideModal("new-folder-modal");
-      });
-
-    document
-      .getElementById("new-folder-confirm")
-      .addEventListener("click", () => {
-        this.confirmNewFolder();
-      });
-
-    document
-      .getElementById("new-folder-input")
-      .addEventListener("keypress", (e) => {
-        if (e.key === "Enter") {
-          this.confirmNewFolder();
-        }
-      });
-
-    // Conflict modal
-    document
-      .getElementById("conflict-overwrite")
-      .addEventListener("click", () => {
-        this.resolveConflict(true);
-      });
-
-    document.getElementById("conflict-skip").addEventListener("click", () => {
-      this.resolveConflict(false);
-    });
-
-    // Delete modal
-    document.getElementById("delete-confirm").addEventListener("click", () => {
-      this.confirmDelete();
-    });
-
-    document.getElementById("delete-cancel").addEventListener("click", () => {
-      this.hideModal("delete-modal");
-    });
-
-    // Move modal
-    document.getElementById("move-cancel").addEventListener("click", () => {
-      this.hideModal("move-modal");
-    });
-
-    document.getElementById("move-confirm").addEventListener("click", () => {
-      this.confirmMove();
-    });
-
-    document.getElementById("move-go-up-btn").addEventListener("click", () => {
-      const currentMovePath =
-        document.getElementById("move-current-path").textContent;
-      if (currentMovePath && currentMovePath !== "/") {
-        this.loadMoveDirectory(this.parentOf(currentMovePath));
-      }
-    });
-
-    // Close modals when clicking outside
-    document.querySelectorAll(".modal").forEach((modal) => {
-      modal.addEventListener("click", (e) => {
-        if (e.target === modal) {
-          this.hideModal(modal.id);
-        }
-      });
-    });
-
-    // Handle browser back/forward buttons
-    window.addEventListener("popstate", (e) => {
-      const path = e.state?.path || this.getPathFromURL();
-      this.loadDirectory(path);
-    });
-  }
-
-  moveItem(path, name) {
-    this.currentMovePath = path;
-    this.currentMoveName = name;
-    this.showModal("move-modal");
-    this.loadMoveDirectory("/");
-  }
-
-  async loadMoveDirectory(path) {
-    try {
-      const response = await fetch(`/api/ls?path=${encodeURIComponent(path)}`);
-      if (!response.ok) {
-        throw new Error("Failed to load directory");
-      }
-      const data = await response.json();
-      const fileList = document.getElementById("move-file-list");
-      fileList.innerHTML = "";
-      data.files.forEach((file) => {
-        if (file.isDir) {
-          const item = document.createElement("div");
-          item.className = "file-item folder";
-          item.innerHTML = `<span class="file-icon">📁</span> <span>${this.escapeHtml(file.name)}</span>`;
-          item.addEventListener("click", () => {
-            this.loadMoveDirectory(file.path);
-          });
-          fileList.appendChild(item);
-        }
-      });
-      document.getElementById("move-current-path").textContent =
-        data.currentPath;
-      document.getElementById("move-go-up-btn").disabled =
-        data.currentPath === "/";
-    } catch (error) {
-      console.error("Error loading move directory:", error);
-      this.showError("Failed to load directory for move");
-    }
-  }
-
-  async confirmMove() {
-    const to = document.getElementById("move-current-path").textContent;
-    this.hideModal("move-modal");
-    this.showLoadingOverlay(true, `Moving "${this.currentMoveName}"...`);
-
-    try {
-      const response = await fetch("/api/move", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: this.currentMovePath,
-          to: to,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Server error (${response.status}): ${errorText}`);
-      }
-
-      const result = await response.json();
-      if (result.success) {
-        this.showSuccess("Item moved successfully");
-        this.loadDirectory(this.currentPath);
-      } else {
-        throw new Error(result.error || "Move failed");
-      }
-    } catch (error) {
-      console.error("Move error:", error);
-      this.showError(`Failed to move: ${error.message}`);
-    } finally {
-      this.showLoadingOverlay(false);
-    }
-  }
-
-  resetCounter() {
-    this.fileUploadCounter = {
-      success: 0,
-      error: 0,
-      overwritten: 0,
-      ignored: 0,
-    };
-  }
-
-  resetConflictBehavior() {
-    this.uploadBehavior = {
-      skipall: false,
-      overwriteall: false,
-    };
-  }
-
-  async loadDirectory(path) {
-    this.showLoading(true);
-
-    try {
-      const response = await fetch(
-        `/api/list?path=${encodeURIComponent(path)}`,
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Server error (${response.status}): ${errorText}`);
-      }
-
-      const data = await response.json();
-
-      this.currentPath = data.currentPath;
-      this.renderFileList(data);
-      this.updatePathDisplay(data.currentPath, data.parentPath);
-
-      // Update URL to reflect current path
-      this.updateURL(data.currentPath);
-    } catch (error) {
-      console.error("Error loading directory:", error);
-      this.showError(`Failed to load directory "${path}": ${error.message}`);
-    } finally {
-      this.showLoading(false);
-    }
-  }
-
-  renderFileList(data) {
-    const fileList = document.getElementById("file-list");
-    fileList.innerHTML = "";
-
-    // Handle empty directories (files can be null or empty array)
-    const files = data.files || [];
-
-    if (files.length === 0) {
-      const emptyMessage = document.createElement("div");
-      emptyMessage.className = "empty-directory";
-      emptyMessage.innerHTML = `
-                <div style="text-align: center; padding: 40px; color: #7f8c8d;">
-                    📂 This directory is empty
-                </div>
-            `;
-      fileList.appendChild(emptyMessage);
-      return;
-    }
-
-    files.forEach((file) => {
-      const fileItem = this.createFileItem(file);
-      fileList.appendChild(fileItem);
-    });
-  }
-
-  createFileItem(file) {
-    const item = document.createElement("div");
-    item.className = `file-item ${file.isDir ? "folder" : "file"}`;
-
-    const icon = file.isDir ? "📁" : "📄";
-
-    item.innerHTML = `
-            <div class="file-name">
-                <span class="file-icon">${icon}</span>
-                <span>${this.escapeHtml(file.name)}</span>
-            </div>
-            <div class="file-size">${file.isDir ? "-" : file.sizeFormatted}</div>
-            <div class="file-date">${this.formatDate(file.modTime)}</div>
-            <div class="file-actions">
-                <button class="btn btn-secondary btn-small rename-btn" data-path="${this.escapeHtml(file.path)}" data-name="${this.escapeHtml(file.name)}">✏️</button>
-                <button class="btn btn-primary btn-small move-btn" data-path="${this.escapeHtml(file.path)}" data-name="${this.escapeHtml(file.name)}">➡️</button>
-                <button class="btn btn-danger btn-small delete-btn" data-path="${this.escapeHtml(file.path)}" data-name="${this.escapeHtml(file.name)}">🗑️</button>
-            </div>
-        `;
-
-    // Add event listeners for buttons
-    const renameBtn = item.querySelector(".rename-btn");
-    const deleteBtn = item.querySelector(".delete-btn");
-    const moveBtn = item.querySelector(".move-btn");
-
-    renameBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.renameItem(file.path, file.name);
-    });
-
-    deleteBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.deleteItem(file.path, file.name);
-    });
-
-    moveBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.moveItem(file.path, file.name);
-    });
-
-    if (file.isDir) {
-      item.addEventListener("click", (e) => {
-        if (!e.target.closest(".btn")) {
-          this.loadDirectory(file.path);
-        }
-      });
-    }
-
-    return item;
-  }
-
-  updatePathDisplay(currentPath, parentPath) {
-    // Ensure currentPath is properly formatted
-    const displayPath = currentPath || "/";
-    document.getElementById("current-path-text").textContent = displayPath;
-
-    const goUpBtn = document.getElementById("go-up-btn");
-    // Enable up button if we have a parent path and we're not at root
-    goUpBtn.disabled = !parentPath || displayPath === "/";
+    this.selectedEntry = null;
+    this._selectedEl = null;
   }
 
   parentOf(path) {
     return path.split("/").slice(0, -1).join("/") || "/";
   }
 
+  async load(path) {
+    this.selectedEntry = null;
+    this._selectedEl = null;
+    this.ui.setLoading("remote", true);
+    try {
+      const res = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
+      if (!res.ok)
+        throw new Error(`Server error ${res.status}: ${await res.text()}`);
+      const data = await res.json();
+      this.currentPath = data.currentPath;
+      this.files = data.files || [];
+      this.render();
+      updateURL(data.currentPath);
+    } catch (err) {
+      this.ui.showError("Failed to load directory: " + err.message);
+    } finally {
+      this.ui.setLoading("remote", false);
+    }
+  }
+
+  async refresh() {
+    await this.load(this.currentPath);
+  }
+
   goUp() {
-    if (this.currentPath && this.currentPath !== "/") {
-      this.loadDirectory(this.parentOf(this.currentPath));
+    if (this.currentPath !== "/") {
+      this.load(this.parentOf(this.currentPath));
     }
   }
 
-  async processFolderEntry(dirEntry, basePath, files) {
-    return new Promise((resolve, reject) => {
-      const dirReader = dirEntry.createReader();
+  render() {
+    const pathEl = document.getElementById("remote-path");
+    pathEl.textContent = this.currentPath;
 
-      const readEntries = () => {
-        dirReader.readEntries(async (entries) => {
-          if (entries.length === 0) {
-            resolve();
-            return;
-          }
+    const upBtn = document.getElementById("remote-up-btn");
+    upBtn.disabled = this.currentPath === "/";
 
-          try {
-            for (const entry of entries) {
-              if (entry.isFile) {
-                const file = await this.getFileFromEntry(entry);
-                if (file) {
-                  const relativePath = entry.fullPath.substring(1);
-                  const folderPath =
-                    basePath +
-                    "/" +
-                    relativePath.substring(0, relativePath.lastIndexOf("/"));
-                  files.push({
-                    file,
-                    path: folderPath || basePath,
-                    createPath: true,
-                  });
-                }
-              } else if (entry.isDirectory) {
-                await this.processFolderEntry(entry, basePath, files);
-              }
-            }
-          } catch (err) {
-            reject(err);
-            return;
-          }
+    const list = document.getElementById("remote-file-list");
+    list.innerHTML = "";
 
-          // Read more entries (browser returns <=100 at a time)
-          readEntries();
-        }, reject);
-      };
-
-      readEntries();
-    });
-  }
-
-  async getFileFromEntry(fileEntry) {
-    return new Promise((resolve) => {
-      fileEntry.file(resolve, () => resolve(null));
-    });
-  }
-
-  async handleFileInput(files, isFolder = false) {
-    if (files.length === 0) return;
-
-    if (this.isUploading) {
-      this.showWarning("An upload is already in progress. Please wait.");
+    if (this.files.length === 0) {
+      const msg = document.createElement("div");
+      msg.className = "empty-directory";
+      msg.textContent = "This directory is empty.";
+      list.appendChild(msg);
       return;
     }
 
-    this.showInfo(`Processing ${isFolder ? "folder" : "file"} upload...`);
-
-    const uploadFiles = [];
-
-    for (const file of files) {
-      if (isFolder && file.webkitRelativePath) {
-        const pathParts = file.webkitRelativePath.split("/");
-        if (pathParts.length > 1) {
-          pathParts.pop();
-          const folderPath = this.currentPath + "/" + pathParts.join("/");
-          uploadFiles.push({
-            file,
-            path: folderPath,
-            createPath: true,
-          });
-        } else {
-          uploadFiles.push({ file, path: this.currentPath });
-        }
-      } else {
-        uploadFiles.push({ file, path: this.currentPath });
-      }
+    for (const file of this.files) {
+      list.appendChild(this._createItem(file));
     }
-
-    if (uploadFiles.length === 0) {
-      this.showWarning("No files found to upload");
-      return;
-    }
-
-    this.showInfo(`Found ${uploadFiles.length} files to upload`);
-    this.uploadQueue = uploadFiles;
-    this.processUploadQueue();
   }
 
-  async processUploadQueue() {
+  _select(file, el) {
+    if (this._selectedEl) this._selectedEl.classList.remove("selected");
+    if (this.selectedEntry === file) {
+      this.selectedEntry = null;
+      this._selectedEl = null;
+    } else {
+      this.selectedEntry = file;
+      this._selectedEl = el;
+      el.classList.add("selected");
+    }
+  }
+
+  _createItem(file) {
+    const item = document.createElement("div");
+    item.className = `file-item ${file.isDir ? "folder" : "file"}`;
+
+    const nameCol = document.createElement("div");
+    nameCol.className = "file-name";
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.textContent = file.isDir ? "📁" : "📄";
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = file.name;
+    nameCol.appendChild(icon);
+    nameCol.appendChild(nameSpan);
+
+    const sizeCol = document.createElement("div");
+    sizeCol.className = "file-size";
+    sizeCol.textContent = file.isDir
+      ? "-"
+      : file.sizeFormatted || formatSize(file.size);
+
+    const dateCol = document.createElement("div");
+    dateCol.className = "file-date";
+    dateCol.textContent = file.modTime
+      ? formatDate(new Date(file.modTime))
+      : "-";
+
+    const actionsCol = document.createElement("div");
+    actionsCol.className = "file-actions";
+
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "btn btn-secondary btn-small";
+    renameBtn.title = "Rename";
+    renameBtn.textContent = "✏️";
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._startRename(file.path, file.name);
+    });
+
+    const moveBtn = document.createElement("button");
+    moveBtn.className = "btn btn-primary btn-small";
+    moveBtn.title = "Move";
+    moveBtn.textContent = "➡️";
+    moveBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._startMove(file.path, file.name);
+    });
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.className = "btn btn-danger btn-small";
+    deleteBtn.title = "Delete";
+    deleteBtn.textContent = "🗑️";
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._startDelete(file.path, file.name);
+    });
+
+    actionsCol.appendChild(renameBtn);
+    actionsCol.appendChild(moveBtn);
+    actionsCol.appendChild(deleteBtn);
+
+    item.appendChild(nameCol);
+    item.appendChild(sizeCol);
+    item.appendChild(dateCol);
+    item.appendChild(actionsCol);
+
+    item.addEventListener("click", (e) => {
+      if (!e.target.closest(".btn")) this._select(file, item);
+    });
+
+    if (file.isDir) {
+      item.addEventListener("dblclick", (e) => {
+        if (!e.target.closest(".btn")) this.load(file.path);
+      });
+    }
+
+    return item;
+  }
+
+  // ── Delete ────────────────────────────────────────────────
+  _startDelete(path, name) {
+    this.pendingDelete = { path, name };
+    const msg = document.getElementById("delete-message");
+    msg.textContent = `Are you sure you want to delete "${name}"? This cannot be undone.`;
+    showModal("delete-modal");
+  }
+
+  async confirmDelete() {
+    const { path, name } = this.pendingDelete;
+    this.pendingDelete = null;
+    hideModal("delete-modal");
+    this.ui.showLoadingOverlay(true, `Deleting "${name}"...`);
+    try {
+      const res = await fetch("/api/delete", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const result = await res.json();
+      if (!result.success) throw new Error(result.error || "Delete failed");
+      this.ui.showSuccess(`"${name}" deleted`);
+      await this.refresh();
+    } catch (err) {
+      this.ui.showError("Delete failed: " + err.message);
+    } finally {
+      this.ui.showLoadingOverlay(false);
+    }
+  }
+
+  // ── Rename ────────────────────────────────────────────────
+  _startRename(path, currentName) {
+    this.pendingRename = { path };
+    const input = document.getElementById("rename-input");
+    input.value = currentName;
+    showModal("rename-modal");
+    input.focus();
+    input.select();
+  }
+
+  async confirmRename() {
+    const newName = document.getElementById("rename-input").value.trim();
+    if (!newName) {
+      this.ui.showWarning("Enter a valid name");
+      return;
+    }
+    hideModal("rename-modal");
+    this.ui.showLoadingOverlay(true, "Renaming...");
+    try {
+      const res = await fetch("/api/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ oldPath: this.pendingRename.path, newName }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const result = await res.json();
+      if (!result.success) throw new Error(result.error || "Rename failed");
+      this.ui.showSuccess("Renamed successfully");
+      await this.refresh();
+    } catch (err) {
+      this.ui.showError("Rename failed: " + err.message);
+    } finally {
+      this.pendingRename = null;
+      this.ui.showLoadingOverlay(false);
+    }
+  }
+
+  // ── New Folder ────────────────────────────────────────────
+  showNewFolderModal() {
+    document.getElementById("new-folder-input").value = "";
+    showModal("new-folder-modal");
+    document.getElementById("new-folder-input").focus();
+  }
+
+  async confirmNewFolder() {
+    const name = document.getElementById("new-folder-input").value.trim();
+    if (!name) return;
+    hideModal("new-folder-modal");
+    try {
+      const res = await fetch("/api/mkdir", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: this.currentPath, name }),
+      });
+      const result = await res.json();
+      if (!result.success) throw new Error(result.error || "Mkdir failed");
+      this.ui.showSuccess("Folder created");
+      await this.refresh();
+    } catch (err) {
+      this.ui.showError("Create folder failed: " + err.message);
+    }
+  }
+
+  // ── Move ──────────────────────────────────────────────────
+  _startMove(path, name) {
+    this.pendingMove = { path, name };
+    showModal("move-modal");
+    this._loadMoveDir("/");
+  }
+
+  async _loadMoveDir(path) {
+    try {
+      const res = await fetch(`/api/ls?path=${encodeURIComponent(path)}`);
+      if (!res.ok) throw new Error("Failed to load");
+      const data = await res.json();
+      const list = document.getElementById("move-file-list");
+      list.innerHTML = "";
+      (data.files || []).forEach((f) => {
+        if (!f.isDir) return;
+        const item = document.createElement("div");
+        item.className = "file-item folder";
+        const icon = document.createElement("span");
+        icon.className = "file-icon";
+        icon.textContent = "📁";
+        const label = document.createElement("span");
+        label.textContent = f.name;
+        item.appendChild(icon);
+        item.appendChild(label);
+        item.addEventListener("click", () => this._loadMoveDir(f.path));
+        list.appendChild(item);
+      });
+      document.getElementById("move-current-path").textContent =
+        data.currentPath;
+      document.getElementById("move-go-up-btn").disabled =
+        data.currentPath === "/";
+    } catch (err) {
+      this.ui.showError("Failed to load move directory: " + err.message);
+    }
+  }
+
+  async confirmMove() {
+    const to = document.getElementById("move-current-path").textContent;
+    const { path, name } = this.pendingMove;
+    this.pendingMove = null;
+    hideModal("move-modal");
+    this.ui.showLoadingOverlay(true, `Moving "${name}"...`);
+    try {
+      const res = await fetch("/api/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ from: path, to }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const result = await res.json();
+      if (!result.success) throw new Error(result.error || "Move failed");
+      this.ui.showSuccess("Moved successfully");
+      await this.refresh();
+    } catch (err) {
+      this.ui.showError("Move failed: " + err.message);
+    } finally {
+      this.ui.showLoadingOverlay(false);
+    }
+  }
+
+  // ── Upload ────────────────────────────────────────────────
+  async _processUploadQueue() {
     if (this.isUploading || this.uploadQueue.length === 0) return;
-
     this.isUploading = true;
     const total = this.uploadQueue.length;
-    let processed = 0;
-    this.showUploadProgress(true);
+    let done = 0;
+    this.ui.showUploadProgress(true);
 
     while (this.uploadQueue.length > 0) {
       const { file, path, createPath } = this.uploadQueue.shift();
       try {
-        await this.uploadFile(file, path, false, createPath);
+        await this._uploadFile(file, path, false, createPath);
         this.fileUploadCounter.success++;
-      } catch (error) {
+      } catch (err) {
         this.fileUploadCounter.error++;
-        console.error("Upload failed:", error);
+        console.error("Upload failed:", err);
       }
-      processed++;
-      this.updateUploadProgress(processed, total);
+      done++;
+      this.ui.updateUploadProgress(done, total);
     }
 
     while (this.conflictedFiles.length > 0) {
       const { file, path, createPath, filename } = this.conflictedFiles.shift();
-
-      const resolver = new Promise((resolve) => {
+      await new Promise((resolve) => {
         this.currentConflictResolve = resolve;
         this.currentConflictFile = file;
         this.currentConflictPath = path;
         this.currentConflictCreatePath = createPath;
-
         if (this.uploadBehavior.overwriteall) {
-          this.resolveConflict(true);
+          this._resolveConflict(true);
         } else if (this.uploadBehavior.skipall) {
-          this.resolveConflict(false);
+          this._resolveConflict(false);
         } else {
-          // Show conflict modal and wait for resolution
-          this.showConflictModal(filename);
+          this._showConflictModal(filename);
         }
       });
-
-      await resolver;
     }
 
     this.isUploading = false;
-    this.showUploadProgress(false);
+    this.ui.showUploadProgress(false);
 
     if (this.fileUploadCounter.success > 0) {
-      this.showSuccess(
-        `Successfully uploaded ${this.fileUploadCounter.success} file(s)${this.fileUploadCounter.ignored > 0 ? `, ${this.fileUploadCounter.ignored} ignored` : ""}`,
+      this.ui.showSuccess(
+        `Uploaded ${this.fileUploadCounter.success} file(s)` +
+          (this.fileUploadCounter.ignored > 0
+            ? `, ${this.fileUploadCounter.ignored} skipped`
+            : ""),
       );
     }
     if (
       this.fileUploadCounter.error > 0 &&
       this.fileUploadCounter.success === 0
     ) {
-      this.showError(
+      this.ui.showError(
         `Failed to upload ${this.fileUploadCounter.error} file(s)`,
       );
     }
 
-    this.resetCounter();
-    this.resetConflictBehavior();
-
-    this.loadDirectory(this.currentPath); // Refresh the file list
+    this.fileUploadCounter = {
+      success: 0,
+      error: 0,
+      overwritten: 0,
+      ignored: 0,
+    };
+    this.uploadBehavior = { skipall: false, overwriteall: false };
+    await this.refresh();
   }
 
-  async uploadFile(file, path, overwrite = false, createPath = false) {
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("path", path);
-    if (overwrite) {
-      formData.append("overwrite", "true");
-    }
-    if (createPath) {
-      formData.append("createPath", "true");
-    }
-
+  async _uploadFile(file, path, overwrite = false, createPath = false) {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("path", path);
+    if (overwrite) form.append("overwrite", "true");
+    if (createPath) form.append("createPath", "true");
     try {
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const result = await response.json();
-
+      const res = await fetch("/api/upload", { method: "POST", body: form });
+      const result = await res.json();
       if (result.conflict) {
         this.conflictedFiles.push({
-          file: file,
-          path: path,
-          createPath: createPath,
+          file,
+          path,
+          createPath,
           filename: result.filename,
         });
       } else if (!result.success) {
         throw new Error(result.error || "Upload failed");
       }
-    } catch (error) {
-      console.error("Upload error:", error);
-      this.showError(`Failed to upload ${file.name}: ${error.message}`);
+    } catch (err) {
+      this.ui.showError(`Failed to upload ${file.name}: ${err.message}`);
     }
   }
 
-  showConflictModal(filename) {
-    document.getElementById("conflict-message").textContent =
-      `File "${filename}" already exists. What would you like to do?`;
-    this.showModal("conflict-modal");
+  _showConflictModal(filename) {
+    const msg = document.getElementById("conflict-message");
+    msg.textContent = `"${filename}" already exists. What would you like to do?`;
+    showModal("conflict-modal");
   }
 
-  async resolveConflict(overwrite) {
-    const repeatAction = document.getElementById(
-      "repeat-conflict-action",
-    ).checked;
-
+  async _resolveConflict(overwrite) {
+    const repeat = document.getElementById("repeat-conflict-action").checked;
     if (overwrite) {
-      this.uploadBehavior.overwriteall = repeatAction;
+      this.uploadBehavior.overwriteall = repeat;
     } else {
-      this.uploadBehavior.skipall = repeatAction;
+      this.uploadBehavior.skipall = repeat;
     }
-
-    this.hideModal("conflict-modal");
-
+    hideModal("conflict-modal");
     if (overwrite) {
-      await this.uploadFile(
+      await this._uploadFile(
         this.currentConflictFile,
         this.currentConflictPath,
         true,
         this.currentConflictCreatePath,
       );
-
       this.fileUploadCounter.overwritten++;
     } else {
       this.fileUploadCounter.ignored++;
     }
+    if (this.currentConflictResolve) this.currentConflictResolve();
+  }
+}
 
-    if (this.currentConflictResolve) {
-      this.currentConflictResolve();
+// ─────────────────────────────────────────────────────────────
+// UI — shared notification / overlay helpers
+// ─────────────────────────────────────────────────────────────
+class UI {
+  setLoading(panel, show) {
+    const el = document.getElementById(`${panel}-loading`);
+    if (el) el.style.display = show ? "block" : "none";
+  }
+
+  showLoadingOverlay(show, message = "Processing...") {
+    const overlay = document.getElementById("loading-overlay");
+    const msg = overlay.querySelector(".loading-spinner div:last-child");
+    if (show) {
+      msg.textContent = message;
+      overlay.classList.add("show");
+    } else {
+      overlay.classList.remove("show");
     }
-  }
-
-  deleteItem(path, name) {
-    // Store the delete details for the confirmation
-    this.currentDeletePath = path;
-    this.currentDeleteName = name;
-
-    // Show the delete confirmation modal
-    document.getElementById("delete-message").textContent =
-      `Are you sure you want to delete "${name}"? This action cannot be undone.`;
-    this.showModal("delete-modal");
-  }
-
-  async confirmDelete() {
-    this.hideModal("delete-modal");
-
-    const path = this.currentDeletePath;
-    const name = this.currentDeleteName;
-
-    this.showLoadingOverlay(true, `Deleting "${name}"...`);
-    this.showInfo(`Starting deletion of "${name}"`);
-
-    try {
-      const response = await fetch("/api/delete", {
-        method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ path }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Delete response error:", errorText);
-        throw new Error(`Server error (${response.status}): ${errorText}`);
-      }
-
-      const result = await response.json();
-
-      if (result.success) {
-        this.showSuccess(`"${name}" deleted successfully`);
-        // Wait a moment to show the success message, then refresh
-        setTimeout(() => {
-          this.loadDirectory(this.currentPath);
-        }, 500);
-      } else {
-        throw new Error(result.error || "Delete operation failed");
-      }
-    } catch (error) {
-      console.error("Delete error:", error);
-      this.showError(`Failed to delete "${name}": ${error.message}`);
-    } finally {
-      this.showLoadingOverlay(false);
-    }
-  }
-
-  renameItem(path, currentName) {
-    document.getElementById("rename-input").value = currentName;
-    this.currentRenamePath = path;
-    this.showModal("rename-modal");
-    document.getElementById("rename-input").focus();
-    document.getElementById("rename-input").select();
-  }
-
-  async confirmRename() {
-    const newName = document.getElementById("rename-input").value.trim();
-    if (!newName) {
-      this.showWarning("Please enter a valid name");
-      return;
-    }
-
-    this.showLoadingOverlay(true, "Renaming...");
-
-    try {
-      const response = await fetch("/api/rename", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          oldPath: this.currentRenamePath,
-          newName: newName,
-        }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Server error (${response.status}): ${errorText}`);
-      }
-
-      const result = await response.json();
-      if (result.success) {
-        this.hideModal("rename-modal");
-        this.showSuccess("Item renamed successfully");
-        setTimeout(() => {
-          this.loadDirectory(this.currentPath);
-        }, 500);
-      } else {
-        throw new Error(result.error || "Rename failed");
-      }
-    } catch (error) {
-      console.error("Rename error:", error);
-      this.showError(`Failed to rename: ${error.message}`);
-    } finally {
-      this.showLoadingOverlay(false);
-    }
-  }
-
-  showNewFolderModal() {
-    document.getElementById("new-folder-input").value = "";
-    this.showModal("new-folder-modal");
-    document.getElementById("new-folder-input").focus();
-  }
-
-  async confirmNewFolder() {
-    const folderName = document.getElementById("new-folder-input").value.trim();
-    if (!folderName) return;
-
-    try {
-      const response = await fetch("/api/mkdir", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          path: this.currentPath,
-          name: folderName,
-        }),
-      });
-
-      const result = await response.json();
-      if (result.success) {
-        this.hideModal("new-folder-modal");
-        this.loadDirectory(this.currentPath); // Refresh
-        this.showSuccess("Folder created successfully");
-      } else {
-        throw new Error(result.error || "Create folder failed");
-      }
-    } catch (error) {
-      console.error("Create folder error:", error);
-      this.showError(`Failed to create folder: ${error.message}`);
-    }
-  }
-
-  showModal(modalId) {
-    document.getElementById(modalId).classList.add("show");
-  }
-
-  hideModal(modalId) {
-    document.getElementById(modalId).classList.remove("show");
-  }
-
-  showLoading(show) {
-    document.getElementById("loading").style.display = show ? "block" : "none";
-    document.querySelector(".file-list-container").style.display = show
-      ? "none"
-      : "block";
   }
 
   showUploadProgress(show) {
@@ -782,8 +655,7 @@ class FileManager {
       ? "block"
       : "none";
     if (show) {
-      document.getElementById("progress-text").textContent =
-        "Uploading files...";
+      document.getElementById("progress-text").textContent = "Uploading...";
       document.getElementById("progress-fill").style.width = "0%";
     }
   }
@@ -792,104 +664,477 @@ class FileManager {
     const pct = total > 0 ? Math.round((current / total) * 100) : 0;
     document.getElementById("progress-fill").style.width = `${pct}%`;
     document.getElementById("progress-text").textContent =
-      `Uploading file ${current} of ${total}...`;
+      `Uploading ${current} of ${total}...`;
   }
 
-  showError(message) {
-    this.showNotification("Error", message, "error");
+  showError(msg) {
+    this._notify("Error", msg, "error");
+  }
+  showSuccess(msg) {
+    this._notify("Success", msg, "success");
+  }
+  showWarning(msg) {
+    this._notify("Warning", msg, "warning");
+  }
+  showInfo(msg) {
+    this._notify("Info", msg, "info");
   }
 
-  showSuccess(message) {
-    this.showNotification("Success", message, "success");
-  }
-
-  showWarning(message) {
-    this.showNotification("Warning", message, "warning");
-  }
-
-  showInfo(message) {
-    this.showNotification("Info", message, "info");
-  }
-
-  showNotification(title, message, type = "info") {
+  _notify(title, message, type = "info") {
+    const icons = { success: "✅", error: "❌", warning: "⚠️", info: "ℹ️" };
     const container = document.getElementById("notification-container");
+    const n = document.createElement("div");
+    n.className = `notification ${type}`;
 
-    const notification = document.createElement("div");
-    notification.className = `notification ${type}`;
-
-    const icons = {
-      success: "✅",
-      error: "❌",
-      warning: "⚠️",
-      info: "ℹ️",
-    };
-
-    const icon = document.createElement("span");
-    icon.className = "notification-icon";
-    icon.textContent = icons[type];
+    const iconEl = document.createElement("span");
+    iconEl.className = "notification-icon";
+    iconEl.textContent = icons[type];
 
     const content = document.createElement("div");
     content.className = "notification-content";
-
     const titleEl = document.createElement("div");
     titleEl.className = "notification-title";
     titleEl.textContent = title;
-
-    const messageEl = document.createElement("div");
-    messageEl.className = "notification-message";
-    messageEl.textContent = message;
+    const msgEl = document.createElement("div");
+    msgEl.className = "notification-message";
+    msgEl.textContent = message;
+    content.appendChild(titleEl);
+    content.appendChild(msgEl);
 
     const closeBtn = document.createElement("button");
     closeBtn.className = "notification-close";
     closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", () => notification.remove());
+    closeBtn.addEventListener("click", () => n.remove());
 
-    content.appendChild(titleEl);
-    content.appendChild(messageEl);
-    notification.appendChild(icon);
-    notification.appendChild(content);
-    notification.appendChild(closeBtn);
-
-    container.appendChild(notification);
-
-    // Auto-remove after 5 seconds
+    n.appendChild(iconEl);
+    n.appendChild(content);
+    n.appendChild(closeBtn);
+    container.appendChild(n);
     setTimeout(() => {
-      if (notification.parentElement) {
-        notification.remove();
-      }
+      if (n.parentElement) n.remove();
     }, 5000);
-  }
-
-  showLoadingOverlay(show, message = "Processing...") {
-    const overlay = document.getElementById("loading-overlay");
-    const spinner = overlay.querySelector(".loading-spinner div:last-child");
-
-    if (show) {
-      spinner.textContent = message;
-      overlay.classList.add("show");
-    } else {
-      overlay.classList.remove("show");
-    }
-  }
-
-  formatDate(dateString) {
-    const date = new Date(dateString);
-    return (
-      date.toLocaleDateString() +
-      " " +
-      date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    );
-  }
-
-  escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
   }
 }
 
-// Initialize the file manager when the page loads
-let fileManager;
+// ─────────────────────────────────────────────────────────────
+// FileManager — orchestrates both panels + cross-panel actions
+// ─────────────────────────────────────────────────────────────
+class FileManager {
+  constructor() {
+    this.ui = new UI();
+    this.local = new LocalPanel(this.ui);
+    this.remote = new RemotePanel(this.ui);
+    this._setupListeners();
+    this.remote.load(getPathFromURL());
+    this.local.render(); // render empty state
+  }
+
+  _setupListeners() {
+    // ── Local panel ──
+    document
+      .getElementById("local-open-btn")
+      .addEventListener("click", () => this.local.open());
+    document
+      .getElementById("local-up-btn")
+      .addEventListener("click", () => this.local.goUp());
+    document
+      .getElementById("local-refresh-btn")
+      .addEventListener("click", () => this.local.refresh());
+
+    // ── Remote panel ──
+    document
+      .getElementById("remote-up-btn")
+      .addEventListener("click", () => this.remote.goUp());
+    document
+      .getElementById("remote-refresh-btn")
+      .addEventListener("click", () => this.remote.refresh());
+    document
+      .getElementById("remote-new-folder-btn")
+      .addEventListener("click", () => this.remote.showNewFolderModal());
+
+    // ── Transfer ──
+    document
+      .getElementById("transfer-up-btn")
+      .addEventListener("click", () => this._uploadLocalToRemote());
+    document
+      .getElementById("transfer-down-btn")
+      .addEventListener("click", () => this._downloadRemoteToLocal());
+
+    // ── Compare ──
+    document
+      .getElementById("compare-btn")
+      .addEventListener("click", () => this._compare());
+    document
+      .getElementById("compare-close")
+      .addEventListener("click", () => hideModal("compare-modal"));
+
+    // ── Rename modal ──
+    document
+      .getElementById("rename-confirm")
+      .addEventListener("click", () => this.remote.confirmRename());
+    document
+      .getElementById("rename-cancel")
+      .addEventListener("click", () => hideModal("rename-modal"));
+    document.getElementById("rename-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.remote.confirmRename();
+      if (e.key === "Escape") hideModal("rename-modal");
+    });
+
+    // ── New folder modal ──
+    document
+      .getElementById("new-folder-confirm")
+      .addEventListener("click", () => this.remote.confirmNewFolder());
+    document
+      .getElementById("new-folder-cancel")
+      .addEventListener("click", () => hideModal("new-folder-modal"));
+    document
+      .getElementById("new-folder-input")
+      .addEventListener("keydown", (e) => {
+        if (e.key === "Enter") this.remote.confirmNewFolder();
+        if (e.key === "Escape") hideModal("new-folder-modal");
+      });
+
+    // ── Delete modal ──
+    document
+      .getElementById("delete-confirm")
+      .addEventListener("click", () => this.remote.confirmDelete());
+    document
+      .getElementById("delete-cancel")
+      .addEventListener("click", () => hideModal("delete-modal"));
+
+    // ── Move modal ──
+    document
+      .getElementById("move-confirm")
+      .addEventListener("click", () => this.remote.confirmMove());
+    document
+      .getElementById("move-cancel")
+      .addEventListener("click", () => hideModal("move-modal"));
+    document.getElementById("move-go-up-btn").addEventListener("click", () => {
+      const cur = document.getElementById("move-current-path").textContent;
+      if (cur && cur !== "/") this.remote._loadMoveDir(parentOf(cur));
+    });
+
+    // ── Conflict modal ──
+    document
+      .getElementById("conflict-overwrite")
+      .addEventListener("click", () => this.remote._resolveConflict(true));
+    document
+      .getElementById("conflict-skip")
+      .addEventListener("click", () => this.remote._resolveConflict(false));
+
+    // ── Close modals on backdrop click ──
+    document.querySelectorAll(".modal").forEach((modal) => {
+      modal.addEventListener("click", (e) => {
+        if (e.target === modal) hideModal(modal.id);
+      });
+    });
+
+    // ── Browser back/forward ──
+    window.addEventListener("popstate", (e) => {
+      this.remote.load(e.state?.path || getPathFromURL());
+    });
+  }
+
+  // Recursively walk a FileSystemDirectoryHandle and collect every file as
+  // {file: File, path: string, createPath: bool} ready for _processUploadQueue.
+  async _collectLocalFiles(dirHandle, remotePath) {
+    const uploads = [];
+    for await (const [name, handle] of dirHandle.entries()) {
+      if (handle.kind === "file") {
+        try {
+          const file = await handle.getFile();
+          uploads.push({ file, path: remotePath, createPath: true });
+        } catch (err) {
+          this.ui.showError(`Cannot read "${name}": ${err.message}`);
+        }
+      } else if (handle.kind === "directory") {
+        const subPath =
+          remotePath === "/" ? "/" + name : remotePath + "/" + name;
+        const sub = await this._collectLocalFiles(handle, subPath);
+        uploads.push(...sub);
+      }
+    }
+    return uploads;
+  }
+
+  // Recursively collect all remote files under a given path as
+  // {remotePath, name, localDirHandle} entries.
+  async _collectRemoteFiles(remotePath, localDirHandle) {
+    const res = await fetch(`/api/list?path=${encodeURIComponent(remotePath)}`);
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    const entries = [];
+    for (const f of data.files || []) {
+      if (!f.isDir) {
+        entries.push({ remotePath: f.path, name: f.name, localDirHandle });
+      } else {
+        const subDirHandle = await localDirHandle.getDirectoryHandle(f.name, {
+          create: true,
+        });
+        const sub = await this._collectRemoteFiles(f.path, subDirHandle);
+        entries.push(...sub);
+      }
+    }
+    return entries;
+  }
+
+  async _uploadLocalToRemote() {
+    if (!this.local.currentHandle) {
+      this.ui.showWarning("Open a local folder first.");
+      return;
+    }
+    if (this.remote.isUploading) {
+      this.ui.showWarning("An upload is already in progress.");
+      return;
+    }
+
+    this.ui.showUploadProgress(true);
+    document.getElementById("progress-text").textContent =
+      "Collecting files...";
+
+    const sel = this.local.selectedEntry;
+    let uploads;
+    try {
+      if (sel && !sel.isDir) {
+        const file = await sel.handle.getFile();
+        uploads = [{ file, path: this.remote.currentPath, createPath: true }];
+      } else if (sel && sel.isDir) {
+        const subPath =
+          this.remote.currentPath === "/"
+            ? "/" + sel.name
+            : this.remote.currentPath + "/" + sel.name;
+        uploads = await this._collectLocalFiles(sel.handle, subPath);
+      } else {
+        uploads = await this._collectLocalFiles(
+          this.local.currentHandle,
+          this.remote.currentPath,
+        );
+      }
+    } catch (err) {
+      this.ui.showError("Failed to collect local files: " + err.message);
+      this.ui.showUploadProgress(false);
+      return;
+    }
+
+    if (uploads.length === 0) {
+      this.ui.showWarning("No files found to upload.");
+      this.ui.showUploadProgress(false);
+      return;
+    }
+
+    this.ui.showUploadProgress(false);
+    this.remote.uploadQueue = uploads;
+    this.remote._processUploadQueue();
+  }
+
+  async _downloadRemoteToLocal() {
+    if (!this.local.supported) {
+      this.ui.showError(
+        "File System Access API not supported in this browser.",
+      );
+      return;
+    }
+
+    let destHandle;
+    try {
+      destHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    } catch (err) {
+      if (err.name !== "AbortError")
+        this.ui.showError("Could not open destination: " + err.message);
+      return;
+    }
+
+    this.ui.showUploadProgress(true);
+    document.getElementById("progress-text").textContent =
+      "Collecting files...";
+
+    const sel = this.remote.selectedEntry;
+    let entries;
+    try {
+      if (sel && !sel.isDir) {
+        entries = [
+          { remotePath: sel.path, name: sel.name, localDirHandle: destHandle },
+        ];
+      } else if (sel && sel.isDir) {
+        const subDirHandle = await destHandle.getDirectoryHandle(sel.name, {
+          create: true,
+        });
+        entries = await this._collectRemoteFiles(sel.path, subDirHandle);
+      } else {
+        entries = await this._collectRemoteFiles(
+          this.remote.currentPath,
+          destHandle,
+        );
+      }
+    } catch (err) {
+      this.ui.showError("Failed to collect remote files: " + err.message);
+      this.ui.showUploadProgress(false);
+      return;
+    }
+
+    if (entries.length === 0) {
+      this.ui.showWarning("No files found to download.");
+      this.ui.showUploadProgress(false);
+      return;
+    }
+
+    const total = entries.length;
+    let done = 0;
+    let errors = 0;
+
+    for (const { remotePath, name, localDirHandle } of entries) {
+      try {
+        const res = await fetch(
+          `/api/download?path=${encodeURIComponent(remotePath)}`,
+        );
+        if (!res.ok) throw new Error(`Server error ${res.status}`);
+        const blob = await res.blob();
+        const fileHandle = await localDirHandle.getFileHandle(name, {
+          create: true,
+        });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } catch (err) {
+        errors++;
+        this.ui.showError(`Failed to download "${name}": ${err.message}`);
+      }
+      done++;
+      this.ui.updateUploadProgress(done, total);
+    }
+
+    this.ui.showUploadProgress(false);
+    if (errors < total) {
+      this.ui.showSuccess(`Downloaded ${total - errors} of ${total} file(s).`);
+    }
+    await this.local.refresh();
+  }
+
+  _compare() {
+    if (!this.local.currentHandle) {
+      this.ui.showWarning("Open a local folder first.");
+      return;
+    }
+
+    const localFiles = this.local.files;
+    const remoteFiles = this.remote.files;
+
+    const localMap = new Map(localFiles.map((f) => [f.name, f]));
+    const remoteMap = new Map(remoteFiles.map((f) => [f.name, f]));
+
+    const onlyLocal = [];
+    const onlyRemote = [];
+    const different = [];
+
+    for (const [name, lf] of localMap) {
+      if (!remoteMap.has(name)) {
+        onlyLocal.push(name);
+      } else {
+        const rf = remoteMap.get(name);
+        const sizeDiff = !lf.isDir && !rf.isDir && lf.size !== rf.size;
+        const timeDiff =
+          lf.modTime &&
+          rf.modTime &&
+          Math.abs(lf.modTime.getTime() - new Date(rf.modTime).getTime()) >
+            2000;
+        if (sizeDiff || timeDiff) {
+          const lSize = lf.isDir ? "-" : formatSize(lf.size);
+          const rSize = rf.isDir ? "-" : formatSize(rf.size);
+          const lTime = lf.modTime ? formatDate(lf.modTime) : "-";
+          const rTime = rf.modTime ? formatDate(new Date(rf.modTime)) : "-";
+          different.push(
+            `${name}  (local: ${lSize} / ${lTime}  —  remote: ${rSize} / ${rTime})`,
+          );
+        }
+      }
+    }
+
+    for (const [name] of remoteMap) {
+      if (!localMap.has(name)) onlyRemote.push(name);
+    }
+
+    document.getElementById("compare-local-path").textContent =
+      this.local.currentPath;
+    document.getElementById("compare-remote-path").textContent =
+      this.remote.currentPath;
+
+    _fillCompareList("compare-only-local", onlyLocal);
+    _fillCompareList("compare-only-remote", onlyRemote);
+    _fillCompareList("compare-different", different);
+
+    showModal("compare-modal");
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Module-level helpers (no class needed)
+// ─────────────────────────────────────────────────────────────
+function showModal(id) {
+  document.getElementById(id).classList.add("show");
+}
+function hideModal(id) {
+  document.getElementById(id).classList.remove("show");
+}
+
+function parentOf(path) {
+  return path.split("/").slice(0, -1).join("/") || "/";
+}
+
+function getPathFromURL() {
+  return new URLSearchParams(window.location.search).get("path") || "/";
+}
+
+function updateURL(path) {
+  const url = new URL(window.location);
+  if (path === "/" || path === "") {
+    url.searchParams.delete("path");
+  } else {
+    url.searchParams.set("path", path);
+  }
+  window.history.pushState({ path }, "", url);
+  document.title = `File Manager — ${path === "/" ? "Root" : path}`;
+}
+
+function formatSize(size) {
+  const unit = 1024;
+  if (size < unit) return `${size} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let div = unit,
+    exp = 0;
+  for (let n = size / unit; n >= unit; n /= unit) {
+    div *= unit;
+    exp++;
+  }
+  return `${(size / div).toFixed(1)} ${units[exp]}`;
+}
+
+function formatDate(date) {
+  return (
+    date.toLocaleDateString() +
+    " " +
+    date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  );
+}
+
+function _fillCompareList(id, items) {
+  const ul = document.getElementById(id);
+  ul.innerHTML = "";
+  if (items.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "—";
+    li.style.color = "var(--fg3)";
+    li.style.fontStyle = "italic";
+    ul.appendChild(li);
+    return;
+  }
+  for (const text of items) {
+    const li = document.createElement("li");
+    li.textContent = text;
+    ul.appendChild(li);
+  }
+}
+
+// ── Bootstrap ──────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-  fileManager = new FileManager();
+  new FileManager();
 });
