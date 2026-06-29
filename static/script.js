@@ -520,8 +520,8 @@ class RemotePanel {
     while (this.uploadQueue.length > 0) {
       const { file, path, createPath } = this.uploadQueue.shift();
       try {
-        await this._uploadFile(file, path, false, createPath);
-        this.fileUploadCounter.success++;
+        const uploaded = await this._uploadFile(file, path, false, createPath);
+        if (uploaded) this.fileUploadCounter.success++;
       } catch (err) {
         this.fileUploadCounter.error++;
         console.error("Upload failed:", err);
@@ -583,22 +583,20 @@ class RemotePanel {
     form.append("path", path);
     if (overwrite) form.append("overwrite", "true");
     if (createPath) form.append("createPath", "true");
-    try {
-      const res = await fetch("/api/upload", { method: "POST", body: form });
-      const result = await res.json();
-      if (result.conflict) {
-        this.conflictedFiles.push({
-          file,
-          path,
-          createPath,
-          filename: result.filename,
-        });
-      } else if (!result.success) {
-        throw new Error(result.error || "Upload failed");
-      }
-    } catch (err) {
-      this.ui.showError(`Failed to upload ${file.name}: ${err.message}`);
+    const res = await fetch("/api/upload", { method: "POST", body: form });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    const result = await res.json();
+    if (result.conflict) {
+      this.conflictedFiles.push({
+        file,
+        path,
+        createPath,
+        filename: result.filename,
+      });
+      return false;
     }
+    if (!result.success) throw new Error(result.error || "Upload failed");
+    return true;
   }
 
   _showConflictModal(filename) {
@@ -615,18 +613,24 @@ class RemotePanel {
       this.uploadBehavior.skipall = repeat;
     }
     hideModal("conflict-modal");
-    if (overwrite) {
-      await this._uploadFile(
-        this.currentConflictFile,
-        this.currentConflictPath,
-        true,
-        this.currentConflictCreatePath,
-      );
-      this.fileUploadCounter.overwritten++;
-    } else {
-      this.fileUploadCounter.ignored++;
+    try {
+      if (overwrite) {
+        await this._uploadFile(
+          this.currentConflictFile,
+          this.currentConflictPath,
+          true,
+          this.currentConflictCreatePath,
+        );
+        this.fileUploadCounter.overwritten++;
+      } else {
+        this.fileUploadCounter.ignored++;
+      }
+    } catch (err) {
+      this.fileUploadCounter.error++;
+      console.error("Upload failed:", err);
+    } finally {
+      if (this.currentConflictResolve) this.currentConflictResolve();
     }
-    if (this.currentConflictResolve) this.currentConflictResolve();
   }
 }
 
