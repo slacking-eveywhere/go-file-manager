@@ -8,6 +8,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -51,6 +52,30 @@ func (s *server) isInsideRoot(fullPath string) bool {
 	return fullPath == s.rootDir || strings.HasPrefix(fullPath, s.rootDir+string(filepath.Separator))
 }
 
+// resolvedInsideRoot resolves symlinks before the containment check so a symlink
+// inside root cannot escape it. Non-existent leaves are tolerated by resolving
+// the nearest existing ancestor.
+func (s *server) resolvedInsideRoot(fullPath string) bool {
+	if !s.isInsideRoot(fullPath) {
+		return false
+	}
+	p := fullPath
+	for {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return s.isInsideRoot(resolved)
+		}
+		if !os.IsNotExist(err) {
+			return false
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return true
+		}
+		p = parent
+	}
+}
+
 func main() {
 	rawRoot := os.Getenv("FILES_ROOT_DIR")
 	if rawRoot == "" {
@@ -73,7 +98,7 @@ func main() {
 	}
 
 	stat := rootDirStat.Sys().(*syscall.Stat_t)
-	fmt.Printf("Root dir stats UID: %d, GID: %d\n", stat.Uid, stat.Gid)
+	log.Printf("Root dir stats UID: %d, GID: %d", stat.Uid, stat.Gid)
 
 	currentUser, err := user.Current()
 	if err != nil {
@@ -90,7 +115,7 @@ func main() {
 	}
 
 	if stat.Uid != uint32(currentUID) || stat.Gid != uint32(currentGID) {
-		fmt.Printf("Current user UID: %s, GID: %s\n", currentUser.Uid, currentUser.Gid)
+		log.Printf("Current user UID: %s, GID: %s", currentUser.Uid, currentUser.Gid)
 		log.Fatal("UID/GID is not the same as the owner of the root dir path")
 	}
 
@@ -147,7 +172,7 @@ func (s *server) handleListDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.isInsideRoot(fullPath) {
+	if !s.resolvedInsideRoot(fullPath) {
 		log.Printf("Access denied: %s is outside root %s", fullPath, s.rootDir)
 		http.Error(w, "Access denied", http.StatusForbidden)
 		return
@@ -248,7 +273,7 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	targetDir, err := filepath.Abs(filepath.Join(s.rootDir, targetPath))
-	if err != nil || !s.isInsideRoot(targetDir) {
+	if err != nil || !s.resolvedInsideRoot(targetDir) {
 		http.Error(w, "Invalid target path", http.StatusBadRequest)
 		return
 	}
@@ -262,7 +287,7 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	safeFilename := filepath.Base(header.Filename)
 	targetFile, err := filepath.Abs(filepath.Join(targetDir, safeFilename))
-	if err != nil || !s.isInsideRoot(targetFile) {
+	if err != nil || !s.resolvedInsideRoot(targetFile) {
 		http.Error(w, "Invalid target path", http.StatusBadRequest)
 		return
 	}
@@ -320,7 +345,7 @@ func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Delete request for path: %s", requestData.Path)
 
 	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.Path))
-	if err != nil || !s.isInsideRoot(fullPath) {
+	if err != nil || !s.resolvedInsideRoot(fullPath) {
 		log.Printf("Invalid path for delete: %s", requestData.Path)
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
@@ -367,14 +392,19 @@ func (s *server) handleRename(w http.ResponseWriter, r *http.Request) {
 	}
 
 	oldFullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.OldPath))
-	if err != nil || !s.isInsideRoot(oldFullPath) {
+	if err != nil || !s.resolvedInsideRoot(oldFullPath) {
 		http.Error(w, "Invalid old path", http.StatusBadRequest)
 		return
 	}
 
 	newFullPath, err := filepath.Abs(filepath.Join(filepath.Dir(oldFullPath), filepath.Base(requestData.NewName)))
-	if err != nil || !s.isInsideRoot(newFullPath) {
+	if err != nil || !s.resolvedInsideRoot(newFullPath) {
 		http.Error(w, "Invalid new path", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := os.Stat(newFullPath); err == nil {
+		http.Error(w, "Destination already exists", http.StatusConflict)
 		return
 	}
 
@@ -409,7 +439,7 @@ func (s *server) handleMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.Path, requestData.Name))
-	if err != nil || !s.isInsideRoot(fullPath) {
+	if err != nil || !s.resolvedInsideRoot(fullPath) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
@@ -445,13 +475,13 @@ func (s *server) handleMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fromFullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.From))
-	if err != nil || !s.isInsideRoot(fromFullPath) {
+	if err != nil || !s.resolvedInsideRoot(fromFullPath) {
 		http.Error(w, "Invalid source path", http.StatusBadRequest)
 		return
 	}
 
 	toFullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.To, filepath.Base(requestData.From)))
-	if err != nil || !s.isInsideRoot(toFullPath) {
+	if err != nil || !s.resolvedInsideRoot(toFullPath) {
 		http.Error(w, "Invalid destination path", http.StatusBadRequest)
 		return
 	}
@@ -491,7 +521,7 @@ func (s *server) handleLs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestedPath))
-	if err != nil || !s.isInsideRoot(fullPath) {
+	if err != nil || !s.resolvedInsideRoot(fullPath) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
@@ -553,7 +583,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestedPath))
-	if err != nil || !s.isInsideRoot(fullPath) {
+	if err != nil || !s.resolvedInsideRoot(fullPath) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
@@ -582,7 +612,7 @@ func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(info.Name()))
+	w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(info.Name())+"; filename*=UTF-8''"+url.PathEscape(info.Name()))
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 
 	if _, err := io.Copy(w, f); err != nil {
