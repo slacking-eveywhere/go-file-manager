@@ -1,21 +1,23 @@
 # Go File Manager
 
-A web-based hierarchical file manager built with Go and vanilla JavaScript. This application provides a clean interface to browse, manage, and upload files through a web browser. One go file and one html file. No bloats and shits.
+A web-based dual-panel file manager built with Go and vanilla JavaScript. Browse a local folder and a remote server side-by-side, transfer files both ways, and compare folders. Single Go file plus a static frontend. No bloats and shits.
 
 ## Features
 
-- **Hierarchical File Browsing**: Navigate through folders like a traditional file explorer
-- **File Operations**: Delete and rename files and folders
-- **Create Folders**: Create new directories
-- **File Information**: View file sizes, modification dates, and file types
-- **Conflict Resolution**: Handle file upload conflicts with user choice
+- **Dual-panel view**: Local folder on the left, remote server on the right (FileZilla-style)
+- **Local browsing**: Uses the File System Access API (Chrome 86+, Firefox 111+) to navigate local files
+- **Transfers**: Upload local to remote and download remote to local, recursively, with conflict resolution
+- **Compare folders**: Show files only-local, only-remote, or differing by size/date
+- **File operations**: Delete, rename, move, create folders on the remote
+- **Select & open**: Single click selects the transfer target, double click opens a folder
+- **File info**: Sizes, modification dates, types
 
 ## Installation
 
 1. Clone or download this repository
-2. Make sure you have Go installed (version 1.21 or later)
+2. Make sure you have Go installed (version 1.26 or later)
 3. Navigate to the project directory
-4. Docker image and bake recipe provided.
+4. Makefile, Docker image and bake recipe provided.
 
 ## Configuration
 
@@ -29,17 +31,10 @@ The application uses environment variables for configuration:
 ### Starting the Server
 
 ```bash
-# Use current directory as root
-go run main.go
+make run
 
-# Or specify a custom root directory
-FILES_ROOT_DIR=/path/to/your/files go run main.go
-
-# Or specify a custom port
-PORT=3000 go run main.go
-
-# Or both
-FILES_ROOT_DIR=/path/to/your/files PORT=3000 go run main.go
+# Or with overrides
+make run FILES_ROOT_DIR=/path/to/your/files PORT=3000
 ```
 
 ### Starting as docker image
@@ -76,9 +71,12 @@ http://localhost:8080
 The application provides a REST API:
 
 - `GET /api/list?path=<path>`: List directory contents
+- `GET /api/ls?path=<path>`: List subdirectories only
+- `GET /api/download?path=<path>`: Download a file
 - `POST /api/upload`: Upload a file
 - `DELETE /api/delete`: Delete a file or folder
 - `POST /api/rename`: Rename a file or folder
+- `POST /api/move`: Move a file or folder
 - `POST /api/mkdir`: Create a new directory
 
 ## Project Structure
@@ -90,6 +88,7 @@ files_manager/
 │   ├── index.html       # Main HTML page
 │   ├── style.css        # CSS styling
 │   └── script.js        # JavaScript file manager logic
+├── Makefile             # Build, run, docker targets
 ├── go.mod               # Go module file
 └── README.md            # This file
 ```
@@ -97,11 +96,8 @@ files_manager/
 ## Building for Production
 
 ```bash
-# Build the binary
-go build -o file-manager main.go
-
-# Run the binary
-./file-manager
+make build
+./build/go-file-manager
 ```
 
 ## License
