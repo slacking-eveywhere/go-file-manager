@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,10 +11,13 @@ import (
 	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
+
+const maxUploadBytes = 32 << 20
 
 type FileInfo struct {
 	Name          string    `json:"name"`
@@ -21,7 +25,6 @@ type FileInfo struct {
 	IsDir         bool      `json:"isDir"`
 	Size          int64     `json:"size"`
 	ModTime       time.Time `json:"modTime"`
-	CreateTime    time.Time `json:"createTime"`
 	SizeFormatted string    `json:"sizeFormatted"`
 }
 
@@ -31,24 +34,34 @@ type DirectoryContent struct {
 	Files       []FileInfo `json:"files"`
 }
 
-var rootDir string
+type server struct {
+	rootDir   string
+	staticDir string
+}
+
+func newServer(rootDir, staticDir string) *server {
+	return &server{rootDir: rootDir, staticDir: staticDir}
+}
+
+// isInsideRoot checks that fullPath (already absolute) is rootDir itself or a
+// descendant of it. The trailing-separator check prevents the prefix collision
+// between e.g. /data/files and /data/files-evil.
+func (s *server) isInsideRoot(fullPath string) bool {
+	return fullPath == s.rootDir || strings.HasPrefix(fullPath, s.rootDir+string(filepath.Separator))
+}
 
 func main() {
-	// Get root directory from environment variable
-	rootDir = os.Getenv("FILES_ROOT_DIR")
-	if rootDir == "" {
-		rootDir = "." // Default to current directory
+	rawRoot := os.Getenv("FILES_ROOT_DIR")
+	if rawRoot == "" {
+		rawRoot = "."
 		log.Println("FILES_ROOT_DIR not set, using current directory")
 	}
 
-	// Ensure rootDir is absolute
-	var err error
-	rootDir, err = filepath.Abs(rootDir)
+	rootDir, err := filepath.Abs(rawRoot)
 	if err != nil {
 		log.Fatal("Error getting absolute path:", err)
 	}
 
-	// Ensure rootDir exists and is writable
 	rootDirStat, err := os.Stat(rootDir)
 	if err != nil {
 		log.Fatal("Error getting directory stats:", err)
@@ -61,33 +74,43 @@ func main() {
 	stat := rootDirStat.Sys().(*syscall.Stat_t)
 	fmt.Printf("Root dir stats UID: %d, GID: %d\n", stat.Uid, stat.Gid)
 
-	// Get the user's UID launching this program
 	currentUser, err := user.Current()
 	if err != nil {
-		log.Fatal("Error retrieving current user, aborting :", err)
+		log.Fatal("Error retrieving current user, aborting:", err)
 	}
 
-	if fmt.Sprint(stat.Uid) != currentUser.Uid || fmt.Sprint(stat.Gid) != currentUser.Gid {
+	currentUID, err := strconv.ParseUint(currentUser.Uid, 10, 32)
+	if err != nil {
+		log.Fatal("Error parsing current user UID:", err)
+	}
+	currentGID, err := strconv.ParseUint(currentUser.Gid, 10, 32)
+	if err != nil {
+		log.Fatal("Error parsing current user GID:", err)
+	}
+
+	if stat.Uid != uint32(currentUID) || stat.Gid != uint32(currentGID) {
 		fmt.Printf("Current user UID: %s, GID: %s\n", currentUser.Uid, currentUser.Gid)
 		log.Fatal("UID/GID is not the same as the owner of the root dir path")
 	}
 
+	staticDir, err := filepath.Abs("./static")
+	if err != nil {
+		log.Fatal("Error resolving static dir:", err)
+	}
+
+	srv := newServer(rootDir, staticDir)
+
 	log.Printf("Starting file manager server with root directory: %s", rootDir)
 
-	// Static files
-	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("./static/"))))
-
-	// API endpoints
-	http.HandleFunc("/api/list", handleListDirectory)
-	http.HandleFunc("/api/upload", handleUpload)
-	http.HandleFunc("/api/delete", handleDelete)
-	http.HandleFunc("/api/rename", handleRename)
-	http.HandleFunc("/api/mkdir", handleMkdir)
-	http.HandleFunc("/api/move", handleMove)
-	http.HandleFunc("/api/ls", handleLs)
-
-	// Main page
-	http.HandleFunc("/", handleIndex)
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
+	http.HandleFunc("/api/list", srv.handleListDirectory)
+	http.HandleFunc("/api/upload", srv.handleUpload)
+	http.HandleFunc("/api/delete", srv.handleDelete)
+	http.HandleFunc("/api/rename", srv.handleRename)
+	http.HandleFunc("/api/mkdir", srv.handleMkdir)
+	http.HandleFunc("/api/move", srv.handleMove)
+	http.HandleFunc("/api/ls", srv.handleLs)
+	http.HandleFunc("/", srv.handleIndex)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -98,11 +121,11 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-func handleIndex(w http.ResponseWriter, r *http.Request) {
-	http.ServeFile(w, r, "./static/index.html")
+func (s *server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, filepath.Join(s.staticDir, "index.html"))
 }
 
-func handleListDirectory(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleListDirectory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -115,23 +138,19 @@ func handleListDirectory(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Listing directory: %s", requestedPath)
 
-	// Ensure path is within root directory
-	fullPath := filepath.Join(rootDir, requestedPath)
-	fullPath, err := filepath.Abs(fullPath)
+	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestedPath))
 	if err != nil {
 		log.Printf("Error getting absolute path for %s: %v", requestedPath, err)
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 
-	// Security check: ensure path is within root directory
-	if !strings.HasPrefix(fullPath, rootDir) {
-		log.Printf("Access denied: %s is outside root %s", fullPath, rootDir)
+	if !s.isInsideRoot(fullPath) {
+		log.Printf("Access denied: %s is outside root %s", fullPath, s.rootDir)
 		http.Error(w, "Access denied", http.StatusForbidden)
 		return
 	}
 
-	// Check if path exists and is a directory
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		log.Printf("Path not found: %s (%v)", fullPath, err)
@@ -145,7 +164,6 @@ func handleListDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read directory contents
 	entries, err := os.ReadDir(fullPath)
 	if err != nil {
 		log.Printf("Error reading directory %s: %v", fullPath, err)
@@ -160,16 +178,14 @@ func handleListDirectory(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		fileInfo := FileInfo{
+		files = append(files, FileInfo{
 			Name:          entry.Name(),
 			Path:          filepath.Join(requestedPath, entry.Name()),
 			IsDir:         entry.IsDir(),
 			Size:          entryInfo.Size(),
 			ModTime:       entryInfo.ModTime(),
-			CreateTime:    entryInfo.ModTime(), // Shit !! Go doesn't provide creation time easily
 			SizeFormatted: formatSize(entryInfo.Size()),
-		}
-		files = append(files, fileInfo)
+		})
 	}
 
 	sort.Slice(files, func(i int, j int) bool {
@@ -182,7 +198,6 @@ func handleListDirectory(w http.ResponseWriter, r *http.Request) {
 		return files[i].Name < files[j].Name
 	})
 
-	// Calculate parent path
 	parentPath := ""
 	if requestedPath != "/" && requestedPath != "" {
 		parentPath = filepath.Dir(requestedPath)
@@ -193,25 +208,24 @@ func handleListDirectory(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Current path: %s, Parent path: %s, Files count: %d", requestedPath, parentPath, len(files))
 
-	response := DirectoryContent{
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(DirectoryContent{
 		CurrentPath: requestedPath,
 		ParentPath:  parentPath,
 		Files:       files,
+	}); err != nil {
+		log.Printf("Error encoding list response: %v", err)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
 }
 
-func handleUpload(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Parse multipart form (32 MB max)
-	err := r.ParseMultipartForm(32 << 20)
-	if err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 		http.Error(w, "Error parsing form", http.StatusBadRequest)
 		return
 	}
@@ -224,7 +238,6 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	overwrite := r.FormValue("overwrite") == "true"
 	createPath := r.FormValue("createPath") == "true"
 
-	// Get the uploaded file
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, "Error getting uploaded file", http.StatusBadRequest)
@@ -232,48 +245,39 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Construct target file path
-	targetDir := filepath.Join(rootDir, targetPath)
+	targetDir, err := filepath.Abs(filepath.Join(s.rootDir, targetPath))
+	if err != nil || !s.isInsideRoot(targetDir) {
+		http.Error(w, "Invalid target path", http.StatusBadRequest)
+		return
+	}
 
-	// If createPath is true, ensure the directory structure exists
 	if createPath {
-		// Security check for targetDir
-		targetDir, err = filepath.Abs(targetDir)
-		if err != nil || !strings.HasPrefix(targetDir, rootDir) {
-			http.Error(w, "Invalid target path", http.StatusBadRequest)
-			return
-		}
-
-		// Create directory structure if it doesn't exist
-		err = os.MkdirAll(targetDir, 0755)
-		if err != nil {
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
 			http.Error(w, "Error creating directory structure", http.StatusInternalServerError)
 			return
 		}
 	}
 
-	targetFile := filepath.Join(targetDir, header.Filename)
-
-	// Security check
-	targetFile, err = filepath.Abs(targetFile)
-	if err != nil || !strings.HasPrefix(targetFile, rootDir) {
+	safeFilename := filepath.Base(header.Filename)
+	targetFile, err := filepath.Abs(filepath.Join(targetDir, safeFilename))
+	if err != nil || !s.isInsideRoot(targetFile) {
 		http.Error(w, "Invalid target path", http.StatusBadRequest)
 		return
 	}
 
-	// Check if file already exists
 	if _, err := os.Stat(targetFile); err == nil && !overwrite {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		if encErr := json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":  false,
 			"error":    "File already exists",
 			"conflict": true,
-			"filename": header.Filename,
-		})
+			"filename": safeFilename,
+		}); encErr != nil {
+			log.Printf("Error encoding conflict response: %v", encErr)
+		}
 		return
 	}
 
-	// Create target file
 	dst, err := os.Create(targetFile)
 	if err != nil {
 		http.Error(w, "Error creating file", http.StatusInternalServerError)
@@ -281,21 +285,21 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dst.Close()
 
-	// Copy uploaded file to target
-	_, err = io.Copy(dst, file)
-	if err != nil {
+	if _, err = io.Copy(dst, file); err != nil {
 		http.Error(w, "Error copying file", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "File uploaded successfully",
-	})
+	}); err != nil {
+		log.Printf("Error encoding upload response: %v", err)
+	}
 }
 
-func handleDelete(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "DELETE" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -305,8 +309,7 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 		Path string `json:"path"`
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&requestData)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
 		log.Printf("Error decoding delete request: %v", err)
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
@@ -314,20 +317,21 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Delete request for path: %s", requestData.Path)
 
-	// Construct full path
-	fullPath := filepath.Join(rootDir, requestData.Path)
-	fullPath, err = filepath.Abs(fullPath)
-	if err != nil || !strings.HasPrefix(fullPath, rootDir) {
+	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.Path))
+	if err != nil || !s.isInsideRoot(fullPath) {
 		log.Printf("Invalid path for delete: %s", requestData.Path)
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 
+	if fullPath == s.rootDir {
+		http.Error(w, "Cannot delete root directory", http.StatusForbidden)
+		return
+	}
+
 	log.Printf("Deleting: %s", fullPath)
 
-	// Delete file or directory
-	err = os.RemoveAll(fullPath)
-	if err != nil {
+	if err := os.RemoveAll(fullPath); err != nil {
 		log.Printf("Error deleting %s: %v", fullPath, err)
 		http.Error(w, "Error deleting file", http.StatusInternalServerError)
 		return
@@ -336,13 +340,15 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Successfully deleted: %s", fullPath)
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "File deleted successfully",
-	})
+	}); err != nil {
+		log.Printf("Error encoding delete response: %v", err)
+	}
 }
 
-func handleRename(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleRename(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -353,44 +359,38 @@ func handleRename(w http.ResponseWriter, r *http.Request) {
 		NewName string `json:"newName"`
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&requestData)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	// Construct paths
-	oldFullPath := filepath.Join(rootDir, requestData.OldPath)
-	newFullPath := filepath.Join(filepath.Dir(oldFullPath), requestData.NewName)
-
-	// Security checks
-	oldFullPath, err = filepath.Abs(oldFullPath)
-	if err != nil || !strings.HasPrefix(oldFullPath, rootDir) {
+	oldFullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.OldPath))
+	if err != nil || !s.isInsideRoot(oldFullPath) {
 		http.Error(w, "Invalid old path", http.StatusBadRequest)
 		return
 	}
 
-	newFullPath, err = filepath.Abs(newFullPath)
-	if err != nil || !strings.HasPrefix(newFullPath, rootDir) {
+	newFullPath, err := filepath.Abs(filepath.Join(filepath.Dir(oldFullPath), filepath.Base(requestData.NewName)))
+	if err != nil || !s.isInsideRoot(newFullPath) {
 		http.Error(w, "Invalid new path", http.StatusBadRequest)
 		return
 	}
 
-	// Rename file
-	err = os.Rename(oldFullPath, newFullPath)
-	if err != nil {
+	if err := os.Rename(oldFullPath, newFullPath); err != nil {
 		http.Error(w, "Error renaming file", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "File renamed successfully",
-	})
+	}); err != nil {
+		log.Printf("Error encoding rename response: %v", err)
+	}
 }
 
-func handleMkdir(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleMkdir(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -401,35 +401,32 @@ func handleMkdir(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&requestData)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	// Construct full path
-	fullPath := filepath.Join(rootDir, requestData.Path, requestData.Name)
-	fullPath, err = filepath.Abs(fullPath)
-	if err != nil || !strings.HasPrefix(fullPath, rootDir) {
+	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.Path, requestData.Name))
+	if err != nil || !s.isInsideRoot(fullPath) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 
-	// Create directory
-	err = os.MkdirAll(fullPath, 0755)
-	if err != nil {
+	if err := os.MkdirAll(fullPath, 0755); err != nil {
 		http.Error(w, "Error creating directory", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "Directory created successfully",
-	})
+	}); err != nil {
+		log.Printf("Error encoding mkdir response: %v", err)
+	}
 }
 
-func handleMove(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleMove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -440,50 +437,47 @@ func handleMove(w http.ResponseWriter, r *http.Request) {
 		To   string `json:"to"`
 	}
 
-	err := json.NewDecoder(r.Body).Decode(&requestData)
-	if err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&requestData); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	// Construct paths
-	fromFullPath := filepath.Join(rootDir, requestData.From)
-	toFullPath := filepath.Join(rootDir, requestData.To, filepath.Base(requestData.From))
-
-	// Security checks
-	fromFullPath, err = filepath.Abs(fromFullPath)
-	if err != nil || !strings.HasPrefix(fromFullPath, rootDir) {
+	fromFullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.From))
+	if err != nil || !s.isInsideRoot(fromFullPath) {
 		http.Error(w, "Invalid source path", http.StatusBadRequest)
 		return
 	}
 
-	toFullPath, err = filepath.Abs(toFullPath)
-	if err != nil || !strings.HasPrefix(toFullPath, rootDir) {
+	toFullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestData.To, filepath.Base(requestData.From)))
+	if err != nil || !s.isInsideRoot(toFullPath) {
 		http.Error(w, "Invalid destination path", http.StatusBadRequest)
 		return
 	}
 
-	// Check if destination exists
 	if _, err := os.Stat(toFullPath); err == nil {
 		http.Error(w, "Destination already exists", http.StatusConflict)
 		return
 	}
 
-	// Move file
-	err = os.Rename(fromFullPath, toFullPath)
-	if err != nil {
+	if err := os.Rename(fromFullPath, toFullPath); err != nil {
+		if errors.Is(err, syscall.EXDEV) {
+			http.Error(w, "Cannot move across filesystems", http.StatusUnprocessableEntity)
+			return
+		}
 		http.Error(w, "Error moving file", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"message": "File moved successfully",
-	})
+	}); err != nil {
+		log.Printf("Error encoding move response: %v", err)
+	}
 }
 
-func handleLs(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleLs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -494,9 +488,8 @@ func handleLs(w http.ResponseWriter, r *http.Request) {
 		requestedPath = "/"
 	}
 
-	fullPath := filepath.Join(rootDir, requestedPath)
-	fullPath, err := filepath.Abs(fullPath)
-	if err != nil || !strings.HasPrefix(fullPath, rootDir) {
+	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestedPath))
+	if err != nil || !s.isInsideRoot(fullPath) {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
@@ -535,14 +528,14 @@ func handleLs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	response := DirectoryContent{
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(DirectoryContent{
 		CurrentPath: requestedPath,
 		ParentPath:  parentPath,
 		Files:       dirs,
+	}); err != nil {
+		log.Printf("Error encoding ls response: %v", err)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
 }
 
 func formatSize(size int64) string {
