@@ -318,6 +318,7 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := os.Stat(targetFile); err == nil && !overwrite {
+		log.Printf("Upload conflict for %s", targetFile)
 		w.Header().Set("Content-Type", "application/json")
 		if encErr := json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":  false,
@@ -330,17 +331,24 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Printf("Uploading %s to %s (overwrite=%t)", safeFilename, targetDir, overwrite)
+
 	dst, err := os.Create(targetFile)
 	if err != nil {
+		log.Printf("Error creating file %s: %v", targetFile, err)
 		http.Error(w, "Error creating file", http.StatusInternalServerError)
 		return
 	}
 	defer dst.Close()
 
-	if _, err = io.Copy(dst, file); err != nil {
+	written, err := io.Copy(dst, file)
+	if err != nil {
+		log.Printf("Error copying upload to %s: %v", targetFile, err)
 		http.Error(w, "Error copying file", http.StatusInternalServerError)
 		return
 	}
+
+	log.Printf("Uploaded %s (%d bytes)", targetFile, written)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]interface{}{
