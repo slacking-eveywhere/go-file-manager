@@ -579,10 +579,10 @@ class RemotePanel {
 
   async _uploadFile(file, path, overwrite = false, createPath = false) {
     const form = new FormData();
-    form.append("file", file);
     form.append("path", path);
     if (overwrite) form.append("overwrite", "true");
     if (createPath) form.append("createPath", "true");
+    form.append("file", file);
     const res = await fetch("/api/upload", { method: "POST", body: form });
     if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     const result = await res.json();

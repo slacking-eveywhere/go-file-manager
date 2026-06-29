@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,8 +19,6 @@ import (
 	"syscall"
 	"time"
 )
-
-const maxUploadBytes = 32 << 20
 
 type FileInfo struct {
 	Name          string    `json:"name"`
@@ -251,22 +250,48 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
-	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+	reader, err := r.MultipartReader()
+	if err != nil {
 		http.Error(w, "Error parsing form", http.StatusBadRequest)
 		return
 	}
 
-	targetPath := r.FormValue("path")
-	if targetPath == "" {
-		targetPath = "/"
+	targetPath := "/"
+	overwrite := false
+	createPath := false
+	var file *multipart.Part
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			http.Error(w, "Error parsing form", http.StatusBadRequest)
+			return
+		}
+		if part.FileName() != "" {
+			file = part
+			break
+		}
+		val, err := io.ReadAll(io.LimitReader(part, 4096))
+		if err != nil {
+			http.Error(w, "Error parsing form", http.StatusBadRequest)
+			return
+		}
+		switch part.FormName() {
+		case "path":
+			if p := string(val); p != "" {
+				targetPath = p
+			}
+		case "overwrite":
+			overwrite = string(val) == "true"
+		case "createPath":
+			createPath = string(val) == "true"
+		}
 	}
 
-	overwrite := r.FormValue("overwrite") == "true"
-	createPath := r.FormValue("createPath") == "true"
-
-	file, header, err := r.FormFile("file")
-	if err != nil {
+	if file == nil {
 		http.Error(w, "Error getting uploaded file", http.StatusBadRequest)
 		return
 	}
@@ -285,7 +310,7 @@ func (s *server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	safeFilename := filepath.Base(header.Filename)
+	safeFilename := filepath.Base(file.FileName())
 	targetFile, err := filepath.Abs(filepath.Join(targetDir, safeFilename))
 	if err != nil || !s.resolvedInsideRoot(targetFile) {
 		http.Error(w, "Invalid target path", http.StatusBadRequest)
