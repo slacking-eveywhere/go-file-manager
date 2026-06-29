@@ -1,0 +1,20 @@
+{
+  "name": "go-file-manager",
+  "dockerComposeFile": ["docker-compose.yml"],
+  "workspaceFolder": "/workdir",
+  "service": "app",
+  "remoteUser": "1000",
+  "postCreateCommand": "post-install.sh",
+  "customizations": {
+    "vscode": {
+      "forwardPorts": [4321],
+      "settings": {
+        "remote": {
+          "restoreForwardedPorts": true,
+          "localPortHost": "0.0.0.0",
+        },
+      },
+      "extensions": ["golang.go", "redhat.vscode-yaml"],
+    },
+  },
+}

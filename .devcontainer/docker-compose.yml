@@ -1,0 +1,27 @@
+volumes:
+  home:
+
+services:
+  app:
+    image: ${DEVCONTAINER_IMAGE_NAME}
+    env_file:
+      - .env
+    volumes:
+      - ../:/workdir:cached
+      - home:/home/${USER}
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      - /etc/nsswitch.conf:/etc/nsswitch.conf:ro
+      - type: tmpfs
+        target: /tmp
+      - /var/run/docker.sock:/var/run/docker.sock
+    network_mode: host
+    tty: true
+    stdin_open: true
+    command: ["sleep", "infinity"]
+    deploy:
+      resources:
+        reservations:
+          memory: ${RESOURCES_RAM:-2G}
+        limits:
+          memory: ${RESOURCES_RAM:-2G}
