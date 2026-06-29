@@ -936,12 +936,27 @@ class FileManager {
     }
 
     let destHandle;
-    try {
-      destHandle = await window.showDirectoryPicker({ mode: "readwrite" });
-    } catch (err) {
-      if (err.name !== "AbortError")
-        this.ui.showError("Could not open destination: " + err.message);
-      return;
+    // If a local folder is already open, target it directly after upgrading to
+    // readwrite permission; otherwise open the picker starting at that folder.
+    if (this.local.currentHandle) {
+      const perm = await this.local.currentHandle.requestPermission({
+        mode: "readwrite",
+      });
+      if (perm === "granted") {
+        destHandle = this.local.currentHandle;
+      }
+    }
+    if (!destHandle) {
+      try {
+        destHandle = await window.showDirectoryPicker({
+          mode: "readwrite",
+          startIn: this.local.currentHandle || "documents",
+        });
+      } catch (err) {
+        if (err.name !== "AbortError")
+          this.ui.showError("Could not open destination: " + err.message);
+        return;
+      }
     }
 
     this.ui.showUploadProgress(true);
