@@ -1,355 +1,331 @@
 class FileManager {
-    constructor() {
-        this.currentPath = "/";
-        this.uploadQueue = [];
-        this.isUploading = false;
-        this.conflictedFiles = [];
-        this.fileUploadCounter = {
-            success: 0,
-            error: 0,
-            overwritten: 0,
-            ignored: 0,
-        };
-        this.uploadBehavior = {
-            skipall: false,
-            overwriteall: false,
-        };
-        this.init();
+  constructor() {
+    this.currentPath = "/";
+    this.uploadQueue = [];
+    this.isUploading = false;
+    this.conflictedFiles = [];
+    this.fileUploadCounter = {
+      success: 0,
+      error: 0,
+      overwritten: 0,
+      ignored: 0,
+    };
+    this.uploadBehavior = {
+      skipall: false,
+      overwriteall: false,
+    };
+    this.init();
+  }
+
+  init() {
+    this.setupEventListeners();
+
+    // Get initial path from URL or default to root
+    const urlPath = this.getPathFromURL();
+    this.loadDirectory(urlPath);
+  }
+
+  getPathFromURL() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const path = urlParams.get("path");
+    return path || "/";
+  }
+
+  updateURL(path) {
+    const url = new URL(window.location);
+    if (path === "/" || path === "") {
+      url.searchParams.delete("path");
+    } else {
+      url.searchParams.set("path", path);
     }
 
-    init() {
-        this.setupEventListeners();
+    // Update URL without triggering page reload
+    window.history.pushState({ path }, "", url);
 
-        // Get initial path from URL or default to root
-        const urlPath = this.getPathFromURL();
-        this.loadDirectory(urlPath);
-    }
+    // Update page title to show current path
+    document.title = `File Manager - ${path === "/" ? "Root" : path}`;
+  }
 
-    getPathFromURL() {
-        const urlParams = new URLSearchParams(window.location.search);
-        const path = urlParams.get("path");
-        return path || "/";
-    }
+  setupEventListeners() {
+    // Navigation
+    document.getElementById("go-up-btn").addEventListener("click", () => {
+      this.goUp();
+    });
 
-    updateURL(path) {
-        const url = new URL(window.location);
-        if (path === "/" || path === "") {
-            url.searchParams.delete("path");
-        } else {
-            url.searchParams.set("path", path);
+    // New folder
+    document.getElementById("new-folder-btn").addEventListener("click", () => {
+      this.showNewFolderModal();
+    });
+
+    // Upload buttons
+    document
+      .getElementById("upload-files-btn")
+      .addEventListener("click", () => {
+        document.getElementById("file-input").click();
+      });
+
+    document
+      .getElementById("upload-folder-btn")
+      .addEventListener("click", () => {
+        document.getElementById("folder-input").click();
+      });
+
+    // File input handlers
+    document.getElementById("file-input").addEventListener("change", (e) => {
+      this.handleFileInput(e.target.files);
+    });
+
+    document.getElementById("folder-input").addEventListener("change", (e) => {
+      this.handleFileInput(e.target.files, true);
+    });
+
+    // Modal event listeners
+    this.setupModalListeners();
+  }
+
+  setupModalListeners() {
+    // Rename modal
+    document.getElementById("rename-cancel").addEventListener("click", () => {
+      this.hideModal("rename-modal");
+    });
+
+    document.getElementById("rename-confirm").addEventListener("click", () => {
+      this.confirmRename();
+    });
+
+    document
+      .getElementById("rename-input")
+      .addEventListener("keypress", (e) => {
+        if (e.key === "Enter") {
+          this.confirmRename();
         }
+      });
 
-        // Update URL without triggering page reload
-        window.history.pushState({ path }, "", url);
+    // New folder modal
+    document
+      .getElementById("new-folder-cancel")
+      .addEventListener("click", () => {
+        this.hideModal("new-folder-modal");
+      });
 
-        // Update page title to show current path
-        document.title = `File Manager - ${path === "/" ? "Root" : path}`;
-    }
+    document
+      .getElementById("new-folder-confirm")
+      .addEventListener("click", () => {
+        this.confirmNewFolder();
+      });
 
-    setupEventListeners() {
-        // Navigation
-        document.getElementById("go-up-btn").addEventListener("click", () => {
-            this.goUp();
-        });
-
-        // New folder
-        document
-            .getElementById("new-folder-btn")
-            .addEventListener("click", () => {
-                this.showNewFolderModal();
-            });
-
-        // Upload buttons
-        document
-            .getElementById("upload-files-btn")
-            .addEventListener("click", () => {
-                document.getElementById("file-input").click();
-            });
-
-        document
-            .getElementById("upload-folder-btn")
-            .addEventListener("click", () => {
-                document.getElementById("folder-input").click();
-            });
-
-        // File input handlers
-        document
-            .getElementById("file-input")
-            .addEventListener("change", (e) => {
-                this.handleFileInput(e.target.files);
-            });
-
-        document
-            .getElementById("folder-input")
-            .addEventListener("change", (e) => {
-                this.handleFileInput(e.target.files, true);
-            });
-
-        // Modal event listeners
-        this.setupModalListeners();
-    }
-
-    setupModalListeners() {
-        // Rename modal
-        document
-            .getElementById("rename-cancel")
-            .addEventListener("click", () => {
-                this.hideModal("rename-modal");
-            });
-
-        document
-            .getElementById("rename-confirm")
-            .addEventListener("click", () => {
-                this.confirmRename();
-            });
-
-        document
-            .getElementById("rename-input")
-            .addEventListener("keypress", (e) => {
-                if (e.key === "Enter") {
-                    this.confirmRename();
-                }
-            });
-
-        // New folder modal
-        document
-            .getElementById("new-folder-cancel")
-            .addEventListener("click", () => {
-                this.hideModal("new-folder-modal");
-            });
-
-        document
-            .getElementById("new-folder-confirm")
-            .addEventListener("click", () => {
-                this.confirmNewFolder();
-            });
-
-        document
-            .getElementById("new-folder-input")
-            .addEventListener("keypress", (e) => {
-                if (e.key === "Enter") {
-                    this.confirmNewFolder();
-                }
-            });
-
-        // Conflict modal
-        document
-            .getElementById("conflict-overwrite")
-            .addEventListener("click", () => {
-                this.resolveConflict(true);
-            });
-
-        document
-            .getElementById("conflict-skip")
-            .addEventListener("click", () => {
-                this.resolveConflict(false);
-            });
-
-        // Delete modal
-        document
-            .getElementById("delete-confirm")
-            .addEventListener("click", () => {
-                this.confirmDelete();
-            });
-
-        document
-            .getElementById("delete-cancel")
-            .addEventListener("click", () => {
-                this.hideModal("delete-modal");
-            });
-
-		// Move modal
-		document
-			.getElementById("move-cancel")
-			.addEventListener("click", () => {
-				this.hideModal("move-modal");
-			});
-
-		document
-			.getElementById("move-confirm")
-			.addEventListener("click", () => {
-				this.confirmMove();
-			});
-
-		document
-			.getElementById("move-go-up-btn")
-			.addEventListener("click", () => {
-				const currentMovePath = document.getElementById("move-current-path").textContent;
-				if (currentMovePath && currentMovePath !== "/") {
-					const parentPath = currentMovePath.split("/").slice(0, -1).join("/") || "/";
-					this.loadMoveDirectory(parentPath);
-				}
-			});
-
-        // Close modals when clicking outside
-        document.querySelectorAll(".modal").forEach((modal) => {
-            modal.addEventListener("click", (e) => {
-                if (e.target === modal) {
-                    this.hideModal(modal.id);
-                }
-            });
-        });
-		
-        // Handle browser back/forward buttons
-        window.addEventListener("popstate", (e) => {
-            const path = e.state?.path || this.getPathFromURL();
-            this.loadDirectory(path);
-        });
-    }
-
-	moveItem(path, name) {
-		this.currentMovePath = path;
-		this.currentMoveName = name;
-		this.showModal("move-modal");
-		this.loadMoveDirectory("/");
-	}
-
-	async loadMoveDirectory(path) {
-		try {
-			const response = await fetch(`/api/ls?path=${encodeURIComponent(path)}`);
-			if (!response.ok) {
-				throw new Error("Failed to load directory");
-			}
-			const data = await response.json();
-			const fileList = document.getElementById("move-file-list");
-			fileList.innerHTML = "";
-			data.files.forEach(file => {
-				if (file.isDir) {
-					const item = document.createElement("div");
-					item.className = "file-item folder";
-					item.innerHTML = `<span class="file-icon">📁</span> <span>${this.escapeHtml(file.name)}</span>`;
-					item.addEventListener("click", () => {
-						this.loadMoveDirectory(file.path);
-					});
-					fileList.appendChild(item);
-				}
-			});
-			document.getElementById("move-current-path").textContent = data.currentPath;
-			document.getElementById("move-go-up-btn").disabled = data.currentPath === "/";
-		} catch (error) {
-			console.error("Error loading move directory:", error);
-			this.showError("Failed to load directory for move");
-		}
-	}
-
-	async confirmMove() {
-		const to = document.getElementById("move-current-path").textContent;
-		this.hideModal("move-modal");
-		this.showLoadingOverlay(true, `Moving "${this.currentMoveName}"...`);
-
-		try {
-			const response = await fetch("/api/move", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					from: this.currentMovePath,
-					to: to,
-				}),
-			});
-
-			if (!response.ok) {
-				const errorText = await response.text();
-				throw new Error(`Server error (${response.status}): ${errorText}`);
-			}
-
-			const result = await response.json();
-			if (result.success) {
-				this.showSuccess("Item moved successfully");
-				this.loadDirectory(this.currentPath);
-			} else {
-				throw new Error(result.error || "Move failed");
-			}
-		} catch (error) {
-			console.error("Move error:", error);
-			this.showError(`Failed to move: ${error.message}`);
-		} finally {
-			this.showLoadingOverlay(false);
-		}
-	}
-
-    resetCounter() {
-        this.fileUploadCounter = {
-            success: 0,
-            error: 0,
-            overwritten: 0,
-            ignored: 0,
-        };
-    }
-
-    resetConflictBehavior() {
-        this.uploadBehavior = {
-            skipall: false,
-            overwriteall: false,
-        };
-    }
-
-    async loadDirectory(path) {
-        this.showLoading(true);
-
-        try {
-            const response = await fetch(
-                `/api/list?path=${encodeURIComponent(path)}`,
-            );
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(
-                    `Server error (${response.status}): ${errorText}`,
-                );
-            }
-
-            const data = await response.json();
-
-            this.currentPath = data.currentPath;
-            this.renderFileList(data);
-            this.updatePathDisplay(data.currentPath, data.parentPath);
-
-            // Update URL to reflect current path
-            this.updateURL(data.currentPath);
-        } catch (error) {
-            console.error("Error loading directory:", error);
-            this.showError(
-                `Failed to load directory "${path}": ${error.message}`,
-            );
-        } finally {
-            this.showLoading(false);
+    document
+      .getElementById("new-folder-input")
+      .addEventListener("keypress", (e) => {
+        if (e.key === "Enter") {
+          this.confirmNewFolder();
         }
+      });
+
+    // Conflict modal
+    document
+      .getElementById("conflict-overwrite")
+      .addEventListener("click", () => {
+        this.resolveConflict(true);
+      });
+
+    document.getElementById("conflict-skip").addEventListener("click", () => {
+      this.resolveConflict(false);
+    });
+
+    // Delete modal
+    document.getElementById("delete-confirm").addEventListener("click", () => {
+      this.confirmDelete();
+    });
+
+    document.getElementById("delete-cancel").addEventListener("click", () => {
+      this.hideModal("delete-modal");
+    });
+
+    // Move modal
+    document.getElementById("move-cancel").addEventListener("click", () => {
+      this.hideModal("move-modal");
+    });
+
+    document.getElementById("move-confirm").addEventListener("click", () => {
+      this.confirmMove();
+    });
+
+    document.getElementById("move-go-up-btn").addEventListener("click", () => {
+      const currentMovePath =
+        document.getElementById("move-current-path").textContent;
+      if (currentMovePath && currentMovePath !== "/") {
+        this.loadMoveDirectory(this.parentOf(currentMovePath));
+      }
+    });
+
+    // Close modals when clicking outside
+    document.querySelectorAll(".modal").forEach((modal) => {
+      modal.addEventListener("click", (e) => {
+        if (e.target === modal) {
+          this.hideModal(modal.id);
+        }
+      });
+    });
+
+    // Handle browser back/forward buttons
+    window.addEventListener("popstate", (e) => {
+      const path = e.state?.path || this.getPathFromURL();
+      this.loadDirectory(path);
+    });
+  }
+
+  moveItem(path, name) {
+    this.currentMovePath = path;
+    this.currentMoveName = name;
+    this.showModal("move-modal");
+    this.loadMoveDirectory("/");
+  }
+
+  async loadMoveDirectory(path) {
+    try {
+      const response = await fetch(`/api/ls?path=${encodeURIComponent(path)}`);
+      if (!response.ok) {
+        throw new Error("Failed to load directory");
+      }
+      const data = await response.json();
+      const fileList = document.getElementById("move-file-list");
+      fileList.innerHTML = "";
+      data.files.forEach((file) => {
+        if (file.isDir) {
+          const item = document.createElement("div");
+          item.className = "file-item folder";
+          item.innerHTML = `<span class="file-icon">📁</span> <span>${this.escapeHtml(file.name)}</span>`;
+          item.addEventListener("click", () => {
+            this.loadMoveDirectory(file.path);
+          });
+          fileList.appendChild(item);
+        }
+      });
+      document.getElementById("move-current-path").textContent =
+        data.currentPath;
+      document.getElementById("move-go-up-btn").disabled =
+        data.currentPath === "/";
+    } catch (error) {
+      console.error("Error loading move directory:", error);
+      this.showError("Failed to load directory for move");
     }
+  }
 
-    renderFileList(data) {
-        const fileList = document.getElementById("file-list");
-        fileList.innerHTML = "";
+  async confirmMove() {
+    const to = document.getElementById("move-current-path").textContent;
+    this.hideModal("move-modal");
+    this.showLoadingOverlay(true, `Moving "${this.currentMoveName}"...`);
 
-        // Handle empty directories (files can be null or empty array)
-        const files = data.files || [];
+    try {
+      const response = await fetch("/api/move", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: this.currentMovePath,
+          to: to,
+        }),
+      });
 
-        if (files.length === 0) {
-            const emptyMessage = document.createElement("div");
-            emptyMessage.className = "empty-directory";
-            emptyMessage.innerHTML = `
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server error (${response.status}): ${errorText}`);
+      }
+
+      const result = await response.json();
+      if (result.success) {
+        this.showSuccess("Item moved successfully");
+        this.loadDirectory(this.currentPath);
+      } else {
+        throw new Error(result.error || "Move failed");
+      }
+    } catch (error) {
+      console.error("Move error:", error);
+      this.showError(`Failed to move: ${error.message}`);
+    } finally {
+      this.showLoadingOverlay(false);
+    }
+  }
+
+  resetCounter() {
+    this.fileUploadCounter = {
+      success: 0,
+      error: 0,
+      overwritten: 0,
+      ignored: 0,
+    };
+  }
+
+  resetConflictBehavior() {
+    this.uploadBehavior = {
+      skipall: false,
+      overwriteall: false,
+    };
+  }
+
+  async loadDirectory(path) {
+    this.showLoading(true);
+
+    try {
+      const response = await fetch(
+        `/api/list?path=${encodeURIComponent(path)}`,
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server error (${response.status}): ${errorText}`);
+      }
+
+      const data = await response.json();
+
+      this.currentPath = data.currentPath;
+      this.renderFileList(data);
+      this.updatePathDisplay(data.currentPath, data.parentPath);
+
+      // Update URL to reflect current path
+      this.updateURL(data.currentPath);
+    } catch (error) {
+      console.error("Error loading directory:", error);
+      this.showError(`Failed to load directory "${path}": ${error.message}`);
+    } finally {
+      this.showLoading(false);
+    }
+  }
+
+  renderFileList(data) {
+    const fileList = document.getElementById("file-list");
+    fileList.innerHTML = "";
+
+    // Handle empty directories (files can be null or empty array)
+    const files = data.files || [];
+
+    if (files.length === 0) {
+      const emptyMessage = document.createElement("div");
+      emptyMessage.className = "empty-directory";
+      emptyMessage.innerHTML = `
                 <div style="text-align: center; padding: 40px; color: #7f8c8d;">
                     📂 This directory is empty
                 </div>
             `;
-            fileList.appendChild(emptyMessage);
-            return;
-        }
-
-        files.forEach((file) => {
-            const fileItem = this.createFileItem(file);
-            fileList.appendChild(fileItem);
-        });
+      fileList.appendChild(emptyMessage);
+      return;
     }
 
-    createFileItem(file) {
-        const item = document.createElement("div");
-        item.className = `file-item ${file.isDir ? "folder" : "file"}`;
+    files.forEach((file) => {
+      const fileItem = this.createFileItem(file);
+      fileList.appendChild(fileItem);
+    });
+  }
 
-        const icon = file.isDir ? "📁" : "📄";
+  createFileItem(file) {
+    const item = document.createElement("div");
+    item.className = `file-item ${file.isDir ? "folder" : "file"}`;
 
-        item.innerHTML = `
+    const icon = file.isDir ? "📁" : "📄";
+
+    item.innerHTML = `
             <div class="file-name">
                 <span class="file-icon">${icon}</span>
                 <span>${this.escapeHtml(file.name)}</span>
@@ -363,539 +339,557 @@ class FileManager {
             </div>
         `;
 
-        // Add event listeners for buttons
-        const renameBtn = item.querySelector(".rename-btn");
-        const deleteBtn = item.querySelector(".delete-btn");
-		const moveBtn = item.querySelector(".move-btn");
+    // Add event listeners for buttons
+    const renameBtn = item.querySelector(".rename-btn");
+    const deleteBtn = item.querySelector(".delete-btn");
+    const moveBtn = item.querySelector(".move-btn");
 
-        renameBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.renameItem(file.path, file.name);
-        });
+    renameBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.renameItem(file.path, file.name);
+    });
 
-        deleteBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            this.deleteItem(file.path, file.name);
-        });
+    deleteBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.deleteItem(file.path, file.name);
+    });
 
-		moveBtn.addEventListener("click", (e) => {
-			e.stopPropagation();
-			this.moveItem(file.path, file.name);
-		});
+    moveBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.moveItem(file.path, file.name);
+    });
 
-        if (file.isDir) {
-            item.addEventListener("click", (e) => {
-                if (!e.target.classList.contains("btn")) {
-                    this.loadDirectory(file.path);
-                }
-            });
+    if (file.isDir) {
+      item.addEventListener("click", (e) => {
+        if (!e.target.closest(".btn")) {
+          this.loadDirectory(file.path);
         }
-
-        return item;
+      });
     }
 
-    updatePathDisplay(currentPath, parentPath) {
-        // Ensure currentPath is properly formatted
-        const displayPath = currentPath || "/";
-        document.getElementById("current-path-text").textContent = displayPath;
+    return item;
+  }
 
-        const goUpBtn = document.getElementById("go-up-btn");
-        // Enable up button if we have a parent path and we're not at root
-        goUpBtn.disabled = !parentPath || displayPath === "/";
+  updatePathDisplay(currentPath, parentPath) {
+    // Ensure currentPath is properly formatted
+    const displayPath = currentPath || "/";
+    document.getElementById("current-path-text").textContent = displayPath;
+
+    const goUpBtn = document.getElementById("go-up-btn");
+    // Enable up button if we have a parent path and we're not at root
+    goUpBtn.disabled = !parentPath || displayPath === "/";
+  }
+
+  parentOf(path) {
+    return path.split("/").slice(0, -1).join("/") || "/";
+  }
+
+  goUp() {
+    if (this.currentPath && this.currentPath !== "/") {
+      this.loadDirectory(this.parentOf(this.currentPath));
     }
+  }
 
-    goUp() {
-        if (this.currentPath && this.currentPath !== "/") {
-            const parentPath =
-                this.currentPath.split("/").slice(0, -1).join("/") || "/";
-            this.loadDirectory(parentPath);
-        }
-    }
+  async processFolderEntry(dirEntry, basePath, files) {
+    return new Promise((resolve, reject) => {
+      const dirReader = dirEntry.createReader();
 
-    async processFolderEntry(dirEntry, basePath, files) {
-        return new Promise((resolve, reject) => {
-            const dirReader = dirEntry.createReader();
-
-            const readEntries = () => {
-                dirReader.readEntries(async (entries) => {
-                    if (entries.length === 0) {
-                        resolve();
-                        return;
-                    }
-
-                    for (const entry of entries) {
-                        if (entry.isFile) {
-                            const file = await this.getFileFromEntry(entry);
-                            if (file) {
-                                // Create the folder structure path
-                                const relativePath =
-                                    entry.fullPath.substring(1); // Remove leading slash
-                                const folderPath =
-                                    basePath +
-                                    "/" +
-                                    relativePath.substring(
-                                        0,
-                                        relativePath.lastIndexOf("/"),
-                                    );
-                                files.push({
-                                    file,
-                                    path: folderPath || basePath,
-                                    createPath: true,
-                                });
-                            }
-                        } else if (entry.isDirectory) {
-                            await this.processFolderEntry(
-                                entry,
-                                basePath,
-                                files,
-                            );
-                        }
-                    }
-
-                    // Read more entries
-                    readEntries();
-                }, reject);
-            };
-
-            readEntries();
-        });
-    }
-
-    async getFileFromEntry(fileEntry) {
-        return new Promise((resolve) => {
-            fileEntry.file(resolve, () => resolve(null));
-        });
-    }
-
-    async handleFileInput(files, isFolder = false) {
-        if (files.length === 0) return;
-
-        this.showInfo(`Processing ${isFolder ? "folder" : "file"} upload...`);
-
-        const uploadFiles = [];
-
-        for (const file of files) {
-            if (isFolder && file.webkitRelativePath) {
-                // Handle folder structure
-                const pathParts = file.webkitRelativePath.split("/");
-                if (pathParts.length > 1) {
-                    // Remove filename from path to get folder structure
-                    pathParts.pop();
-                    const folderPath =
-                        this.currentPath + "/" + pathParts.join("/");
-                    uploadFiles.push({
-                        file,
-                        path: folderPath,
-                        createPath: true,
-                    });
-                } else {
-                    uploadFiles.push({ file, path: this.currentPath });
-                }
-            } else {
-                // Regular file upload
-                uploadFiles.push({ file, path: this.currentPath });
-            }
-        }
-
-        if (uploadFiles.length === 0) {
-            this.showWarning("No files found to upload");
+      const readEntries = () => {
+        dirReader.readEntries(async (entries) => {
+          if (entries.length === 0) {
+            resolve();
             return;
-        }
+          }
 
-        this.showInfo(`Found ${uploadFiles.length} files to upload`);
-        this.uploadQueue = uploadFiles;
-        this.processUploadQueue();
-    }
-
-    async processUploadQueue() {
-        if (this.isUploading || this.uploadQueue.length === 0) return;
-
-        this.isUploading = true;
-        this.showUploadProgress(true);
-
-        while (this.uploadQueue.length > 0) {
-            const { file, path, createPath } = this.uploadQueue.shift();
-            try {
-                await this.uploadFile(file, path, false, createPath);
-                this.fileUploadCounter.success++;
-            } catch (error) {
-                this.fileUploadCounter.error++;
-                console.error("Upload failed:", error);
-            }
-        }
-
-        while (this.conflictedFiles.length > 0) {
-            const { file, path, createPath, filename } =
-                this.conflictedFiles.shift();
-
-            const resolver = new Promise((resolve) => {
-                this.currentConflictResolve = resolve;
-                this.currentConflictFile = file;
-                this.currentConflictPath = path;
-                this.currentConflictCreatePath = createPath;
-
-                if (this.uploadBehavior.overwriteall) {
-                    this.resolveConflict(true);
-                } else if (this.uploadBehavior.skipall) {
-                    this.resolveConflict(false);
-                } else {
-                    // Show conflict modal and wait for resolution
-                    this.showConflictModal(filename);
+          try {
+            for (const entry of entries) {
+              if (entry.isFile) {
+                const file = await this.getFileFromEntry(entry);
+                if (file) {
+                  const relativePath = entry.fullPath.substring(1);
+                  const folderPath =
+                    basePath +
+                    "/" +
+                    relativePath.substring(0, relativePath.lastIndexOf("/"));
+                  files.push({
+                    file,
+                    path: folderPath || basePath,
+                    createPath: true,
+                  });
                 }
-            });
-
-            await resolver;
-        }
-
-        this.isUploading = false;
-        this.showUploadProgress(false);
-
-        if (this.fileUploadCounter.success > 0) {
-            this.showSuccess(
-                `Successfully uploaded ${this.fileUploadCounter.success} file(s)${this.fileUploadCounter.ignored > 0 ? `, ${this.fileUploadCounter.ignored} ignored` : ""}`,
-            );
-        }
-        if (
-            this.fileUploadCounter.error > 0 &&
-            this.fileUploadCounter.success === 0
-        ) {
-            this.showError(`Failed to upload ${failed} file(s)`);
-        }
-
-        this.resetCounter();
-        this.resetConflictBehavior();
-
-        this.loadDirectory(this.currentPath); // Refresh the file list
-    }
-
-    async uploadFile(file, path, overwrite = false, createPath = false) {
-        const formData = new FormData();
-        formData.append("file", file);
-        formData.append("path", path);
-        if (overwrite) {
-            formData.append("overwrite", "true");
-        }
-        if (createPath) {
-            formData.append("createPath", "true");
-        }
-
-        try {
-            const response = await fetch("/api/upload", {
-                method: "POST",
-                body: formData,
-            });
-
-            const result = await response.json();
-
-            if (result.conflict) {
-                this.conflictedFiles.push({
-                    file: file,
-                    path: path,
-                    createPath: createPath,
-                    filename: result.filename,
-                });
-            } else if (!result.success) {
-                throw new Error(result.error || "Upload failed");
+              } else if (entry.isDirectory) {
+                await this.processFolderEntry(entry, basePath, files);
+              }
             }
-        } catch (error) {
-            console.error("Upload error:", error);
-            this.showError(`Failed to upload ${file.name}: ${error.message}`);
-        }
-    }
-
-    showConflictModal(filename) {
-        document.getElementById("conflict-message").textContent =
-            `File "${filename}" already exists. What would you like to do?`;
-        this.showModal("conflict-modal");
-    }
-
-    async resolveConflict(overwrite) {
-        const repeatAction = document.getElementById(
-            "repeat-conflict-action",
-        ).checked;
-
-        if (overwrite) {
-            this.uploadBehavior.overwriteall = repeatAction;
-        } else {
-            this.uploadBehavior.skipall = repeatAction;
-        }
-
-        this.hideModal("conflict-modal");
-
-        if (overwrite) {
-            await this.uploadFile(
-                this.currentConflictFile,
-                this.currentConflictPath,
-                true,
-                this.currentConflictCreatePath,
-            );
-
-            this.fileUploadCounter.overwritten++;
-        } else {
-            this.fileUploadCounter.ignored++;
-        }
-
-        if (this.currentConflictResolve) {
-            this.currentConflictResolve();
-        }
-    }
-
-    async deleteItem(path, name) {
-        // Store the delete details for the confirmation
-        this.currentDeletePath = path;
-        this.currentDeleteName = name;
-
-        // Show the delete confirmation modal
-        document.getElementById("delete-message").textContent =
-            `Are you sure you want to delete "${name}"? This action cannot be undone.`;
-        this.showModal("delete-modal");
-    }
-
-    async confirmDelete() {
-        this.hideModal("delete-modal");
-
-        const path = this.currentDeletePath;
-        const name = this.currentDeleteName;
-
-        this.showLoadingOverlay(true, `Deleting "${name}"...`);
-        this.showInfo(`Starting deletion of "${name}"`);
-
-        try {
-            const response = await fetch("/api/delete", {
-                method: "DELETE",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ path }),
-            });
-
-            if (!response.ok) {
-                const errorText = await response.text();
-                console.error("Delete response error:", errorText);
-                throw new Error(
-                    `Server error (${response.status}): ${errorText}`,
-                );
-            }
-
-            const result = await response.json();
-
-            if (result.success) {
-                this.showSuccess(`"${name}" deleted successfully`);
-                // Wait a moment to show the success message, then refresh
-                setTimeout(() => {
-                    this.loadDirectory(this.currentPath);
-                }, 500);
-            } else {
-                throw new Error(result.error || "Delete operation failed");
-            }
-        } catch (error) {
-            console.error("Delete error:", error);
-            this.showError(`Failed to delete "${name}": ${error.message}`);
-        } finally {
-            this.showLoadingOverlay(false);
-        }
-    }
-
-    renameItem(path, currentName) {
-        document.getElementById("rename-input").value = currentName;
-        this.currentRenamePath = path;
-        this.showModal("rename-modal");
-        document.getElementById("rename-input").focus();
-        document.getElementById("rename-input").select();
-    }
-
-    async confirmRename() {
-        const newName = document.getElementById("rename-input").value.trim();
-        if (!newName) {
-            this.showWarning("Please enter a valid name");
+          } catch (err) {
+            reject(err);
             return;
+          }
+
+          // Read more entries (browser returns <=100 at a time)
+          readEntries();
+        }, reject);
+      };
+
+      readEntries();
+    });
+  }
+
+  async getFileFromEntry(fileEntry) {
+    return new Promise((resolve) => {
+      fileEntry.file(resolve, () => resolve(null));
+    });
+  }
+
+  async handleFileInput(files, isFolder = false) {
+    if (files.length === 0) return;
+
+    if (this.isUploading) {
+      this.showWarning("An upload is already in progress. Please wait.");
+      return;
+    }
+
+    this.showInfo(`Processing ${isFolder ? "folder" : "file"} upload...`);
+
+    const uploadFiles = [];
+
+    for (const file of files) {
+      if (isFolder && file.webkitRelativePath) {
+        const pathParts = file.webkitRelativePath.split("/");
+        if (pathParts.length > 1) {
+          pathParts.pop();
+          const folderPath = this.currentPath + "/" + pathParts.join("/");
+          uploadFiles.push({
+            file,
+            path: folderPath,
+            createPath: true,
+          });
+        } else {
+          uploadFiles.push({ file, path: this.currentPath });
         }
+      } else {
+        uploadFiles.push({ file, path: this.currentPath });
+      }
+    }
 
-        this.showLoadingOverlay(true, "Renaming...");
+    if (uploadFiles.length === 0) {
+      this.showWarning("No files found to upload");
+      return;
+    }
 
-        try {
-            const response = await fetch("/api/rename", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    oldPath: this.currentRenamePath,
-                    newName: newName,
-                }),
-            });
+    this.showInfo(`Found ${uploadFiles.length} files to upload`);
+    this.uploadQueue = uploadFiles;
+    this.processUploadQueue();
+  }
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(
-                    `Server error (${response.status}): ${errorText}`,
-                );
-            }
+  async processUploadQueue() {
+    if (this.isUploading || this.uploadQueue.length === 0) return;
 
-            const result = await response.json();
-            if (result.success) {
-                this.hideModal("rename-modal");
-                this.showSuccess("Item renamed successfully");
-                setTimeout(() => {
-                    this.loadDirectory(this.currentPath);
-                }, 500);
-            } else {
-                throw new Error(result.error || "Rename failed");
-            }
-        } catch (error) {
-            console.error("Rename error:", error);
-            this.showError(`Failed to rename: ${error.message}`);
-        } finally {
-            this.showLoadingOverlay(false);
+    this.isUploading = true;
+    const total = this.uploadQueue.length;
+    let processed = 0;
+    this.showUploadProgress(true);
+
+    while (this.uploadQueue.length > 0) {
+      const { file, path, createPath } = this.uploadQueue.shift();
+      try {
+        await this.uploadFile(file, path, false, createPath);
+        this.fileUploadCounter.success++;
+      } catch (error) {
+        this.fileUploadCounter.error++;
+        console.error("Upload failed:", error);
+      }
+      processed++;
+      this.updateUploadProgress(processed, total);
+    }
+
+    while (this.conflictedFiles.length > 0) {
+      const { file, path, createPath, filename } = this.conflictedFiles.shift();
+
+      const resolver = new Promise((resolve) => {
+        this.currentConflictResolve = resolve;
+        this.currentConflictFile = file;
+        this.currentConflictPath = path;
+        this.currentConflictCreatePath = createPath;
+
+        if (this.uploadBehavior.overwriteall) {
+          this.resolveConflict(true);
+        } else if (this.uploadBehavior.skipall) {
+          this.resolveConflict(false);
+        } else {
+          // Show conflict modal and wait for resolution
+          this.showConflictModal(filename);
         }
+      });
+
+      await resolver;
     }
 
-    showNewFolderModal() {
-        document.getElementById("new-folder-input").value = "";
-        this.showModal("new-folder-modal");
-        document.getElementById("new-folder-input").focus();
+    this.isUploading = false;
+    this.showUploadProgress(false);
+
+    if (this.fileUploadCounter.success > 0) {
+      this.showSuccess(
+        `Successfully uploaded ${this.fileUploadCounter.success} file(s)${this.fileUploadCounter.ignored > 0 ? `, ${this.fileUploadCounter.ignored} ignored` : ""}`,
+      );
+    }
+    if (
+      this.fileUploadCounter.error > 0 &&
+      this.fileUploadCounter.success === 0
+    ) {
+      this.showError(
+        `Failed to upload ${this.fileUploadCounter.error} file(s)`,
+      );
     }
 
-    async confirmNewFolder() {
-        const folderName = document
-            .getElementById("new-folder-input")
-            .value.trim();
-        if (!folderName) return;
+    this.resetCounter();
+    this.resetConflictBehavior();
 
-        try {
-            const response = await fetch("/api/mkdir", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    path: this.currentPath,
-                    name: folderName,
-                }),
-            });
+    this.loadDirectory(this.currentPath); // Refresh the file list
+  }
 
-            const result = await response.json();
-            if (result.success) {
-                this.hideModal("new-folder-modal");
-                this.loadDirectory(this.currentPath); // Refresh
-                this.showSuccess("Folder created successfully");
-            } else {
-                throw new Error(result.error || "Create folder failed");
-            }
-        } catch (error) {
-            console.error("Create folder error:", error);
-            this.showError(`Failed to create folder: ${error.message}`);
-        }
+  async uploadFile(file, path, overwrite = false, createPath = false) {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("path", path);
+    if (overwrite) {
+      formData.append("overwrite", "true");
+    }
+    if (createPath) {
+      formData.append("createPath", "true");
     }
 
-    showModal(modalId) {
-        document.getElementById(modalId).classList.add("show");
+    try {
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (result.conflict) {
+        this.conflictedFiles.push({
+          file: file,
+          path: path,
+          createPath: createPath,
+          filename: result.filename,
+        });
+      } else if (!result.success) {
+        throw new Error(result.error || "Upload failed");
+      }
+    } catch (error) {
+      console.error("Upload error:", error);
+      this.showError(`Failed to upload ${file.name}: ${error.message}`);
+    }
+  }
+
+  showConflictModal(filename) {
+    document.getElementById("conflict-message").textContent =
+      `File "${filename}" already exists. What would you like to do?`;
+    this.showModal("conflict-modal");
+  }
+
+  async resolveConflict(overwrite) {
+    const repeatAction = document.getElementById(
+      "repeat-conflict-action",
+    ).checked;
+
+    if (overwrite) {
+      this.uploadBehavior.overwriteall = repeatAction;
+    } else {
+      this.uploadBehavior.skipall = repeatAction;
     }
 
-    hideModal(modalId) {
-        document.getElementById(modalId).classList.remove("show");
+    this.hideModal("conflict-modal");
+
+    if (overwrite) {
+      await this.uploadFile(
+        this.currentConflictFile,
+        this.currentConflictPath,
+        true,
+        this.currentConflictCreatePath,
+      );
+
+      this.fileUploadCounter.overwritten++;
+    } else {
+      this.fileUploadCounter.ignored++;
     }
 
-    showLoading(show) {
-        document.getElementById("loading").style.display = show
-            ? "block"
-            : "none";
-        document.querySelector(".file-list-container").style.display = show
-            ? "none"
-            : "block";
+    if (this.currentConflictResolve) {
+      this.currentConflictResolve();
     }
+  }
 
-    showUploadProgress(show) {
-        document.getElementById("upload-progress").style.display = show
-            ? "block"
-            : "none";
-        if (show) {
-            document.getElementById("progress-text").textContent =
-                "Uploading files...";
-            document.getElementById("progress-fill").style.width = "50%";
-        }
-    }
+  deleteItem(path, name) {
+    // Store the delete details for the confirmation
+    this.currentDeletePath = path;
+    this.currentDeleteName = name;
 
-    showError(message) {
-        this.showNotification("Error", message, "error");
-    }
+    // Show the delete confirmation modal
+    document.getElementById("delete-message").textContent =
+      `Are you sure you want to delete "${name}"? This action cannot be undone.`;
+    this.showModal("delete-modal");
+  }
 
-    showSuccess(message) {
-        this.showNotification("Success", message, "success");
-    }
+  async confirmDelete() {
+    this.hideModal("delete-modal");
 
-    showWarning(message) {
-        this.showNotification("Warning", message, "warning");
-    }
+    const path = this.currentDeletePath;
+    const name = this.currentDeleteName;
 
-    showInfo(message) {
-        this.showNotification("Info", message, "info");
-    }
+    this.showLoadingOverlay(true, `Deleting "${name}"...`);
+    this.showInfo(`Starting deletion of "${name}"`);
 
-    showNotification(title, message, type = "info") {
-        const container = document.getElementById("notification-container");
+    try {
+      const response = await fetch("/api/delete", {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ path }),
+      });
 
-        const notification = document.createElement("div");
-        notification.className = `notification ${type}`;
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Delete response error:", errorText);
+        throw new Error(`Server error (${response.status}): ${errorText}`);
+      }
 
-        const icons = {
-            success: "✅",
-            error: "❌",
-            warning: "⚠️",
-            info: "ℹ️",
-        };
+      const result = await response.json();
 
-        notification.innerHTML = `
-            <span class="notification-icon">${icons[type]}</span>
-            <div class="notification-content">
-                <div class="notification-title">${title}</div>
-                <div class="notification-message">${message}</div>
-            </div>
-            <button class="notification-close" onclick="this.parentElement.remove()">×</button>
-        `;
-
-        container.appendChild(notification);
-
-        // Auto-remove after 5 seconds
+      if (result.success) {
+        this.showSuccess(`"${name}" deleted successfully`);
+        // Wait a moment to show the success message, then refresh
         setTimeout(() => {
-            if (notification.parentElement) {
-                notification.remove();
-            }
-        }, 5000);
+          this.loadDirectory(this.currentPath);
+        }, 500);
+      } else {
+        throw new Error(result.error || "Delete operation failed");
+      }
+    } catch (error) {
+      console.error("Delete error:", error);
+      this.showError(`Failed to delete "${name}": ${error.message}`);
+    } finally {
+      this.showLoadingOverlay(false);
+    }
+  }
+
+  renameItem(path, currentName) {
+    document.getElementById("rename-input").value = currentName;
+    this.currentRenamePath = path;
+    this.showModal("rename-modal");
+    document.getElementById("rename-input").focus();
+    document.getElementById("rename-input").select();
+  }
+
+  async confirmRename() {
+    const newName = document.getElementById("rename-input").value.trim();
+    if (!newName) {
+      this.showWarning("Please enter a valid name");
+      return;
     }
 
-    showLoadingOverlay(show, message = "Processing...") {
-        const overlay = document.getElementById("loading-overlay");
-        const spinner = overlay.querySelector(
-            ".loading-spinner div:last-child",
-        );
+    this.showLoadingOverlay(true, "Renaming...");
 
-        if (show) {
-            spinner.textContent = message;
-            overlay.classList.add("show");
-        } else {
-            overlay.classList.remove("show");
-        }
-    }
+    try {
+      const response = await fetch("/api/rename", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          oldPath: this.currentRenamePath,
+          newName: newName,
+        }),
+      });
 
-    formatDate(dateString) {
-        const date = new Date(dateString);
-        return (
-            date.toLocaleDateString() +
-            " " +
-            date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-        );
-    }
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server error (${response.status}): ${errorText}`);
+      }
 
-    escapeHtml(text) {
-        const div = document.createElement("div");
-        div.textContent = text;
-        return div.innerHTML;
+      const result = await response.json();
+      if (result.success) {
+        this.hideModal("rename-modal");
+        this.showSuccess("Item renamed successfully");
+        setTimeout(() => {
+          this.loadDirectory(this.currentPath);
+        }, 500);
+      } else {
+        throw new Error(result.error || "Rename failed");
+      }
+    } catch (error) {
+      console.error("Rename error:", error);
+      this.showError(`Failed to rename: ${error.message}`);
+    } finally {
+      this.showLoadingOverlay(false);
     }
+  }
+
+  showNewFolderModal() {
+    document.getElementById("new-folder-input").value = "";
+    this.showModal("new-folder-modal");
+    document.getElementById("new-folder-input").focus();
+  }
+
+  async confirmNewFolder() {
+    const folderName = document.getElementById("new-folder-input").value.trim();
+    if (!folderName) return;
+
+    try {
+      const response = await fetch("/api/mkdir", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          path: this.currentPath,
+          name: folderName,
+        }),
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        this.hideModal("new-folder-modal");
+        this.loadDirectory(this.currentPath); // Refresh
+        this.showSuccess("Folder created successfully");
+      } else {
+        throw new Error(result.error || "Create folder failed");
+      }
+    } catch (error) {
+      console.error("Create folder error:", error);
+      this.showError(`Failed to create folder: ${error.message}`);
+    }
+  }
+
+  showModal(modalId) {
+    document.getElementById(modalId).classList.add("show");
+  }
+
+  hideModal(modalId) {
+    document.getElementById(modalId).classList.remove("show");
+  }
+
+  showLoading(show) {
+    document.getElementById("loading").style.display = show ? "block" : "none";
+    document.querySelector(".file-list-container").style.display = show
+      ? "none"
+      : "block";
+  }
+
+  showUploadProgress(show) {
+    document.getElementById("upload-progress").style.display = show
+      ? "block"
+      : "none";
+    if (show) {
+      document.getElementById("progress-text").textContent =
+        "Uploading files...";
+      document.getElementById("progress-fill").style.width = "0%";
+    }
+  }
+
+  updateUploadProgress(current, total) {
+    const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+    document.getElementById("progress-fill").style.width = `${pct}%`;
+    document.getElementById("progress-text").textContent =
+      `Uploading file ${current} of ${total}...`;
+  }
+
+  showError(message) {
+    this.showNotification("Error", message, "error");
+  }
+
+  showSuccess(message) {
+    this.showNotification("Success", message, "success");
+  }
+
+  showWarning(message) {
+    this.showNotification("Warning", message, "warning");
+  }
+
+  showInfo(message) {
+    this.showNotification("Info", message, "info");
+  }
+
+  showNotification(title, message, type = "info") {
+    const container = document.getElementById("notification-container");
+
+    const notification = document.createElement("div");
+    notification.className = `notification ${type}`;
+
+    const icons = {
+      success: "✅",
+      error: "❌",
+      warning: "⚠️",
+      info: "ℹ️",
+    };
+
+    const icon = document.createElement("span");
+    icon.className = "notification-icon";
+    icon.textContent = icons[type];
+
+    const content = document.createElement("div");
+    content.className = "notification-content";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "notification-title";
+    titleEl.textContent = title;
+
+    const messageEl = document.createElement("div");
+    messageEl.className = "notification-message";
+    messageEl.textContent = message;
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "notification-close";
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", () => notification.remove());
+
+    content.appendChild(titleEl);
+    content.appendChild(messageEl);
+    notification.appendChild(icon);
+    notification.appendChild(content);
+    notification.appendChild(closeBtn);
+
+    container.appendChild(notification);
+
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      if (notification.parentElement) {
+        notification.remove();
+      }
+    }, 5000);
+  }
+
+  showLoadingOverlay(show, message = "Processing...") {
+    const overlay = document.getElementById("loading-overlay");
+    const spinner = overlay.querySelector(".loading-spinner div:last-child");
+
+    if (show) {
+      spinner.textContent = message;
+      overlay.classList.add("show");
+    } else {
+      overlay.classList.remove("show");
+    }
+  }
+
+  formatDate(dateString) {
+    const date = new Date(dateString);
+    return (
+      date.toLocaleDateString() +
+      " " +
+      date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    );
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
 }
 
 // Initialize the file manager when the page loads
 let fileManager;
 document.addEventListener("DOMContentLoaded", () => {
-    fileManager = new FileManager();
+  fileManager = new FileManager();
 });
