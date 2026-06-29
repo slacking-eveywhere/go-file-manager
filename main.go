@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"os/user"
@@ -110,6 +111,7 @@ func main() {
 	http.HandleFunc("/api/mkdir", srv.handleMkdir)
 	http.HandleFunc("/api/move", srv.handleMove)
 	http.HandleFunc("/api/ls", srv.handleLs)
+	http.HandleFunc("/api/download", srv.handleDownload)
 	http.HandleFunc("/", srv.handleIndex)
 
 	port := os.Getenv("PORT")
@@ -535,6 +537,56 @@ func (s *server) handleLs(w http.ResponseWriter, r *http.Request) {
 		Files:       dirs,
 	}); err != nil {
 		log.Printf("Error encoding ls response: %v", err)
+	}
+}
+
+func (s *server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	requestedPath := r.URL.Query().Get("path")
+	if requestedPath == "" {
+		http.Error(w, "Missing path parameter", http.StatusBadRequest)
+		return
+	}
+
+	fullPath, err := filepath.Abs(filepath.Join(s.rootDir, requestedPath))
+	if err != nil || !s.isInsideRoot(fullPath) {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "Path is a directory", http.StatusBadRequest)
+		return
+	}
+
+	f, err := os.Open(fullPath)
+	if err != nil {
+		http.Error(w, "Cannot open file", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	ext := filepath.Ext(info.Name())
+	contentType := mime.TypeByExtension(ext)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", "attachment; filename="+strconv.Quote(info.Name()))
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+
+	if _, err := io.Copy(w, f); err != nil {
+		log.Printf("Error streaming download for %s: %v", fullPath, err)
 	}
 }
 
