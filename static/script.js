@@ -583,9 +583,30 @@ class RemotePanel {
     if (overwrite) form.append("overwrite", "true");
     if (createPath) form.append("createPath", "true");
     form.append("file", file);
-    const res = await fetch("/api/upload", { method: "POST", body: form });
-    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    const result = await res.json();
+
+    const result = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/upload");
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          this.ui.updateUploadBytes(file.name, e.loaded, e.total);
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status < 200 || xhr.status >= 300) {
+          reject(new Error(`${xhr.status}: ${xhr.responseText}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error("Bad response"));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Network error"));
+      xhr.send(form);
+    });
+
     if (result.conflict) {
       this.conflictedFiles.push({
         file,
@@ -669,6 +690,13 @@ class UI {
     document.getElementById("progress-fill").style.width = `${pct}%`;
     document.getElementById("progress-text").textContent =
       `Uploading ${current} of ${total}...`;
+  }
+
+  updateUploadBytes(name, loaded, total) {
+    const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+    document.getElementById("progress-fill").style.width = `${pct}%`;
+    document.getElementById("progress-text").textContent =
+      `${name}: ${formatSize(loaded)} / ${formatSize(total)} (${pct}%)`;
   }
 
   showError(msg) {
